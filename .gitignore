@@ -1,0 +1,25 @@
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+env
+venv
+.venv
+
+# Environment
+.env
+
+# Database
+*.db
+*.sqlite3
+
+# Pytest
+.pytest_cache
+.coverage
+htmlcov
+
+# OS
+.DS_Store
+Thumbs.db
