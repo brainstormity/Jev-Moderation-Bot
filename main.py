@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import sys
+import typing
 from typing import Literal, Optional
 
 import discord
@@ -21,9 +22,10 @@ from discord.ext import commands
 import config
 from database import Database, db_instance
 from moderator import MessageModerator
-from profiler import build_profile_embed, evaluate_user_profile
+from profiler import build_profile_container, build_profile_embed, evaluate_user_profile
 from profile_views import ChannelSelectFallbackView, ProfileReportView, scrape_channel_history
 from typesafe import AsyncTypeSafe
+from container import create_container, create_container_view
 
 # Configure logging
 logging.basicConfig(
@@ -47,16 +49,9 @@ class JevModerationBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """One-time startup hook called before the bot connects to the Discord gateway."""
-        # 1. Initialize database schemas once
+        # Initialize database schemas once
         await db_instance.init_db()
         logger.info("Connected to database successfully.")
-
-        # 2. Sync application slash commands once
-        try:
-            synced = await self.tree.sync()
-            logger.info("Synced %d application command(s).", len(synced))
-        except Exception as exc:
-            logger.error("Failed to sync application commands: %s", exc)
 
     async def on_ready(self) -> None:
         """Fires on initial ready and reconnects without re-running heavy startup logic."""
@@ -71,8 +66,13 @@ moderator = MessageModerator(client=typesafe_client, db=db_instance)
 @bot.event
 async def on_message(message: discord.Message) -> None:
     """Real-time message listener hooked into TypeSafe AI moderation and rolling message cache."""
-    # 1. Ignore messages from bots or outside guilds
-    if message.author.bot or not message.guild:
+    # 1. Ignore messages from bots
+    if message.author.bot:
+        return
+
+    # Direct messages (DMs): skip guild moderation and message caching, but process bot prefix commands (e.g. !sync)
+    if not message.guild:
+        await bot.process_commands(message)
         return
 
     # 2. Persist to rolling message cache with accurate Discord created_at timestamp
@@ -99,6 +99,65 @@ async def on_message(message: discord.Message) -> None:
     # 4. If message was not removed by moderation, allow normal command processing
     if not was_moderated:
         await bot.process_commands(message)
+
+
+# ---------------------------------------------------------------------------
+# Owner Prefix Commands
+# ---------------------------------------------------------------------------
+
+@bot.command(name="sync")
+@commands.is_owner()
+async def sync(
+    ctx: commands.Context,
+    guilds: commands.Greedy[discord.Object],
+    spec: typing.Optional[typing.Literal["~", "*", "^"]] = None,
+) -> None:
+    """Owner command to selectively sync slash commands globally or to specific guilds.
+
+    Usage:
+    - !sync               -> Global sync (syncs all commands globally)
+    - !sync ~             -> Sync current guild
+    - !sync *             -> Copies all global app commands to current guild and syncs
+    - !sync ^             -> Clears all commands from current guild and syncs
+    - !sync id_1 id_2 ... -> Syncs specified guild IDs
+    """
+    if not guilds:
+        # sync current guild
+        if spec == "~":
+            synced_commands = await ctx.bot.tree.sync(guild=ctx.guild)
+
+        # copies all global app commands to current guild and syncs
+        elif spec == "*":
+            ctx.bot.tree.copy_global_to(guild=ctx.guild)
+            synced_commands = await ctx.bot.tree.sync(guild=ctx.guild)
+
+        # clears all commands from the current guild target and syncs (removes guild commands)
+        elif spec == "^":
+            ctx.bot.tree.clear_commands(guild=ctx.guild)
+            await ctx.bot.tree.sync(guild=ctx.guild)
+            synced_commands = []
+
+        # global sync
+        else:
+            synced_commands = await ctx.bot.tree.sync()
+            if "global_var" in globals() and hasattr(globals()["global_var"], "_store_synced_commands"):
+                await globals()["global_var"]._store_synced_commands(synced_commands)
+
+        await ctx.send(
+            f"Synced {len(synced_commands)} commands {'globally' if spec is None else 'to the current guild.'}"
+        )
+        return
+
+    ret = 0
+    for guild in guilds:
+        try:
+            await ctx.bot.tree.sync(guild=guild)
+        except discord.HTTPException:
+            pass
+        else:
+            ret += 1
+
+    await ctx.send(f"Synced the tree to {ret}/{len(guilds)}.")
 
 
 # ---------------------------------------------------------------------------
@@ -227,32 +286,33 @@ async def user_offenses(interaction: discord.Interaction, user: discord.Member) 
     active_count = sum(1 for o in offenses if o["status"] == "ACTIVE")
     pardoned_count = sum(1 for o in offenses if o["status"] == "PARDONED")
 
-    embed = discord.Embed(
-        title=f"📋 Infraction History — {user.display_name}",
-        description=(
-            f"**Member**: {user.mention} (`{user.id}`)\n"
-            f"**Active Infractions**: `{active_count}` | **Pardoned**: `{pardoned_count}`\n"
-            f"*Showing the {len(offenses)} most recent offenses:*"
-        ),
-        color=discord.Color.gold() if active_count > 0 else discord.Color.green(),
-    )
+    body_lines = [
+        f"## 📋 Infraction History — {user.display_name}",
+        f"**Member**: {user.mention} (`{user.id}`)",
+        f"**Active Infractions**: `{active_count}` | **Pardoned**: `{pardoned_count}`",
+        f"*Showing the {len(offenses)} most recent offenses:*\n",
+    ]
 
     for off in offenses:
         status_emoji = "🔴" if off["status"] == "ACTIVE" else ("🟢" if off["status"] == "PARDONED" else "⚫")
         created_str = off["created_at"]
         clean_msg = off["message_content"].replace("```", "")[:120]
 
-        embed.add_field(
-            name=f"{status_emoji} Offense #{off['id']} • {off['action_taken']} [{off['status']}]",
-            value=(
-                f"**Channel**: <#{off['channel_id']}> | **Date**: `{created_str}`\n"
-                f"**Classification**: `{off['classification']}` (Conf: `{off['confidence']:.1%}`)\n"
-                f"**Content**: ```{clean_msg}```"
-            ),
-            inline=False,
+        body_lines.append(
+            f"### {status_emoji} Offense #{off['id']} • {off['action_taken']} [{off['status']}]\n"
+            f"• **Channel**: <#{off['channel_id']}> | **Date**: `{created_str}`\n"
+            f"• **Classification**: `{off['classification']}` (Conf: `{off['confidence']:.1%}`)\n"
+            f"• **Content**: ```{clean_msg}```"
         )
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    container = create_container(
+        body="\n".join(body_lines),
+        accent_color=0xFEE75C if active_count > 0 else 0x57F287,
+        thumbnail_url=user.display_avatar.url if user.display_avatar else None,
+        footer_text=f"Server: {interaction.guild.name} • Offenses Record",
+    )
+
+    await interaction.response.send_message(view=create_container_view(container), ephemeral=True)
 
 
 @bot.tree.command(name="pardon", description="Manually lift timeout and pardon a member's latest infraction.")
@@ -337,26 +397,27 @@ async def mod_config(interaction: discord.Interaction) -> None:
 
     channel_mention = f"<#{settings.mod_log_channel_id}>" if settings.mod_log_channel_id else "*None (Server Audit Log only)*"
 
-    embed = discord.Embed(
-        title=f"⚙️ Moderation Settings — {interaction.guild.name}",
-        color=discord.Color.blurple(),
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
-    embed.add_field(name="Mod-Log Channel", value=channel_mention, inline=True)
-    embed.add_field(name="Tier 1 Threshold", value=f"`{settings.tier1_threshold:.2f}`", inline=True)
-    embed.add_field(name="Tier 2 Threshold", value=f"`{settings.tier2_threshold:.2f}`", inline=True)
-
-    embed.add_field(name="1st Timeout Duration", value=f"`{settings.first_timeout_minutes}` mins (3rd Offense)", inline=True)
-    embed.add_field(name="Subsequent Timeout", value=f"`{settings.subsequent_timeout_minutes}` mins (4th+ Offenses)", inline=True)
-    embed.add_field(name="Model Override", value=f"`{settings.model_override or 'Default (jev-latest)'}`", inline=True)
-
-    embed.add_field(
-        name="🧠 Jev AI In-Context Memory",
-        value=f"**{len(recent_flags)}** active safe precedent(s) currently guiding Jev evaluations in this server.",
-        inline=False,
+    body = (
+        f"## ⚙️ Moderation Settings — {interaction.guild.name}\n\n"
+        f"### 🛡️ Detection & Channels\n"
+        f"• **Mod-Log Channel**: {channel_mention}\n"
+        f"• **Tier 1 Threshold**: `{settings.tier1_threshold:.2f}`\n"
+        f"• **Tier 2 Threshold**: `{settings.tier2_threshold:.2f}`\n\n"
+        f"### ⏱️ Timeout Escalation\n"
+        f"• **1st Timeout Duration**: `{settings.first_timeout_minutes}` mins (3rd Offense)\n"
+        f"• **Subsequent Timeout**: `{settings.subsequent_timeout_minutes}` mins (4th+ Offenses)\n"
+        f"• **Model Override**: `{settings.model_override or 'Default (jev-latest)'}`\n\n"
+        f"### 🧠 Jev AI In-Context Memory\n"
+        f"**{len(recent_flags)}** active safe precedent(s) currently guiding Jev evaluations in this server."
     )
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    container = create_container(
+        body=body,
+        accent_color=0x5865F2,
+        footer_text=f"Guild ID: {interaction.guild.id} • TypeSafe Configuration",
+    )
+
+    await interaction.response.send_message(view=create_container_view(container), ephemeral=True)
 
 
 @bot.tree.command(
@@ -434,11 +495,11 @@ async def profile_user(
         model=settings.model_override,
     )
 
-    embed = build_profile_embed(profile, user, interaction.guild)
     report_view = ProfileReportView(
         profile=profile,
         target_member=user,
         client=typesafe_client,
+        guild=interaction.guild,
         db=db_instance,
         requested_count=message_count,
     )
@@ -449,7 +510,6 @@ async def profile_user(
 
     await interaction.followup.send(
         content=notice or None,
-        embed=embed,
         view=report_view,
         ephemeral=True,
     )
@@ -494,16 +554,16 @@ async def profile_user_context(interaction: discord.Interaction, user: discord.M
         model=settings.model_override,
     )
 
-    embed = build_profile_embed(profile, user, interaction.guild)
     report_view = ProfileReportView(
         profile=profile,
         target_member=user,
         client=typesafe_client,
+        guild=interaction.guild,
         db=db_instance,
         requested_count=25,
     )
 
-    await interaction.followup.send(embed=embed, view=report_view, ephemeral=True)
+    await interaction.followup.send(view=report_view, ephemeral=True)
 
 
 @bot.tree.command(name="help", description="List all available moderation and administration commands.")
@@ -514,49 +574,32 @@ async def help_command(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
         return
 
-    embed = discord.Embed(
-        title="Moderation Commands Reference",
-        description="Available commands for server moderators and administrators:",
-        color=discord.Color.blurple(),
+    body = (
+        "## 🛡️ Moderation Commands Reference\n"
+        "Available commands for server moderators and administrators:\n\n"
+        "### 👥 Member Intelligence\n"
+        "• `/profile` — Build an AI behavioral profile from recent messages.\n"
+        "• `/user-offenses` — View a member's past infraction timeline.\n\n"
+        "### ⚖️ Moderation Actions\n"
+        "• `/pardon` — Lift timeout and pardon a member's latest infraction.\n\n"
+        "### ⚙️ Configuration (Administrator)\n"
+        "• `/set-mod-log` — Set the channel for moderation alerts.\n"
+        "• `/unset-mod-log` — Remove the moderation alert channel.\n"
+        "• `/set-timeouts` — Configure timeout durations for offenses.\n"
+        "• `/set-thresholds` — Adjust AI detection sensitivity.\n"
+        "• `/mod-config` — View current server moderation settings.\n"
+        "• `/export-feedback` — Export false flags and threat logs.\n\n"
+        "### ⚡ Shortcuts\n"
+        "• Right-click user -> **Apps** -> **Generate AI Profile**"
     )
 
-    embed.add_field(
-        name="Member Intelligence",
-        value=(
-            "`/profile` — Build an AI behavioral profile from recent messages.\n"
-            "`/user-offenses` — View a member's past infraction timeline."
-        ),
-        inline=False,
+    container = create_container(
+        body=body,
+        accent_color=0x5865F2,
+        footer_text="Jev Moderation Bot • Staff Reference Guide",
     )
 
-    embed.add_field(
-        name="Moderation Actions",
-        value=(
-            "`/pardon` — Lift timeout and pardon a member's latest infraction."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="Configuration (Administrator)",
-        value=(
-            "`/set-mod-log` — Set the channel for moderation alerts.\n"
-            "`/unset-mod-log` — Remove the moderation alert channel.\n"
-            "`/set-timeouts` — Configure timeout durations for offenses.\n"
-            "`/set-thresholds` — Adjust AI detection sensitivity.\n"
-            "`/mod-config` — View current server moderation settings.\n"
-            "`/export-feedback` — Export false flags and threat logs."
-        ),
-        inline=False,
-    )
-
-    embed.add_field(
-        name="Shortcuts",
-        value="Right-click user -> **Apps** -> **Generate AI Profile**",
-        inline=False,
-    )
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(view=create_container_view(container), ephemeral=True)
 
 
 @bot.tree.error

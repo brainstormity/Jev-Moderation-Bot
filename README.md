@@ -85,7 +85,23 @@ When inviting the bot, grant:
 python3 main.py
 ```
 
-The bot will create the SQLite tables on startup and sync slash commands.
+The bot will automatically initialize SQLite database tables on startup.
+
+### 6. Syncing Commands (Owner Only)
+To avoid hitting Discord rate limits on every bot restart, application commands are **not** synced automatically on startup. Whenever you first set up the bot, add new commands, or update existing ones, you must manually sync the application command tree.
+
+You can run the owner prefix command either by **DMing the bot directly** or running it in a server channel:
+
+```text
+!sync
+```
+
+#### Sync Options
+- `!sync` — Syncs all slash commands globally (recommended for production deployment).
+- `!sync ~` — Syncs slash commands specifically to the current server (instant, skips Discord's global propagation delay).
+- `!sync *` — Copies global application commands to the current server and syncs.
+- `!sync ^` — Clears all commands from the current server.
+- `!sync <guild_id_1> <guild_id_2>` — Syncs specific server IDs (e.g. `!sync 1234567890 9876543210`).
 
 ## How User Profiling Works
 

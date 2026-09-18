@@ -14,6 +14,7 @@ from database import Database
 from main import on_message, profile_user, profile_user_context
 from profiler import (
     UserProfileData,
+    build_profile_container,
     build_profile_embed,
     build_profile_state,
     evaluate_user_profile,
@@ -222,6 +223,47 @@ def test_build_profile_embed():
     assert any("Noobness" in field.value for field in embed.fields)
 
 
+@pytest.mark.asyncio
+async def test_build_profile_container():
+    """Verify Components v2 Container formatting and radar content."""
+    member = make_mock_member(user_id=123, name="Charlie")
+    guild = AsyncMock(spec=discord.Guild)
+    guild.name = "Awesome Community"
+
+    profile = UserProfileData(
+        user_id=123,
+        display_name="Charlie",
+        account_age_days=100,
+        server_age_days=40,
+        sampled_message_count=15,
+        prior_offense_count=0,
+        scam_score=0.1,
+        spam_score=0.2,
+        noob_score=0.75,
+        toxic_score=0.05,
+        helpful_score=0.6,
+        persona="BENIGN_NEWBIE",
+        persona_confidence=0.9,
+        recommended_action="WELCOME_GUIDE",
+        action_confidence=0.85,
+        summary="Server Beginner / Needs Guidance",
+    )
+
+    container = build_profile_container(profile, member, guild)
+    assert isinstance(container, discord.ui.Container)
+    # Validate payload
+    view = discord.ui.LayoutView()
+    view.add_item(container)
+    comps = view.to_components()
+    assert len(comps) == 1
+    assert comps[0]["type"] == 17
+    comps_str = str(comps)
+    assert "Member Dossier — Charlie" in comps_str
+    assert "BENIGN_NEWBIE" in comps_str
+    assert "Behavioral Radar" in comps_str
+    assert "Noobness" in comps_str
+
+
 # ==============================================================================
 # Channel Scraper Tests (Early Termination & Bulk Caching)
 # ==============================================================================
@@ -328,7 +370,7 @@ async def test_profile_user_command_from_cache(db: Database):
     interaction.response.defer.assert_called_once_with(ephemeral=True)
     interaction.followup.send.assert_called_once()
     _, kwargs = interaction.followup.send.call_args
-    assert "embed" in kwargs
+    assert "view" in kwargs
     assert isinstance(kwargs["view"], ProfileReportView)
 
 

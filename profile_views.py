@@ -16,8 +16,9 @@ import discord
 from discord import ui
 
 from database import Database, db_instance
-from profiler import UserProfileData, build_profile_embed, evaluate_user_profile
+from profiler import UserProfileData, build_profile_embed, build_profile_container, evaluate_user_profile
 from typesafe import AsyncTypeSafe
+from container import create_container, create_container_view
 
 logger = logging.getLogger("profiler.views")
 
@@ -75,8 +76,8 @@ async def scrape_channel_history(
     return target_messages, len(bulk_tuples)
 
 
-class SampledMessagesPaginationView(ui.View):
-    """Ephemeral view displaying paginated sampled messages with original timestamps."""
+class SampledMessagesPaginationView(ui.LayoutView):
+    """Ephemeral view displaying paginated sampled messages using Components v2 Container."""
 
     def __init__(self, messages: List[Dict[str, Any]], member_name: str) -> None:
         super().__init__(timeout=120)
@@ -85,13 +86,36 @@ class SampledMessagesPaginationView(ui.View):
         self.page = 0
         self.page_size = 5
         self.max_pages = max(1, (len(messages) + self.page_size - 1) // self.page_size)
-        self._update_buttons()
 
-    def _update_buttons(self) -> None:
-        self.prev_btn.disabled = (self.page == 0)
-        self.next_btn.disabled = (self.page >= self.max_pages - 1)
+        self.prev_btn = ui.Button(label="◀ Previous", style=discord.ButtonStyle.secondary, custom_id="msg_prev")
+        self.next_btn = ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="msg_next")
+        self.prev_btn.callback = self._on_prev
+        self.next_btn.callback = self._on_next
+
+        self._refresh()
+
+    def get_current_container(self) -> discord.ui.Container:
+        start = self.page * self.page_size
+        end = start + self.page_size
+        slice_msgs = self.messages[start:end]
+
+        body = (
+            f"## 📜 Sampled Messages — {self.member_name}\n"
+            f"Showing messages `{start + 1}` to `{min(end, len(self.messages))}` of `{len(self.messages)}` total:\n"
+        )
+        for idx, m in enumerate(slice_msgs, start=start + 1):
+            ts = m.get("created_at", "Unknown")
+            clean_content = m.get("content", "").replace("```", "")[:250]
+            body += f"\n**#{idx} • Channel <#{m.get('channel_id', 'unknown')}> • {ts}**\n```{clean_content}```\n"
+
+        return create_container(
+            body=body,
+            accent_color=0x2B2D31,
+            footer_text=f"Page {self.page + 1}/{self.max_pages}",
+        )
 
     def get_current_embed(self) -> discord.Embed:
+        """Legacy fallback embed for backwards compatibility."""
         start = self.page * self.page_size
         end = start + self.page_size
         slice_msgs = self.messages[start:end]
@@ -114,17 +138,27 @@ class SampledMessagesPaginationView(ui.View):
         embed.set_footer(text=f"Page {self.page + 1}/{self.max_pages}")
         return embed
 
-    @ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary, custom_id="msg_prev")
-    async def prev_btn(self, interaction: discord.Interaction, button: ui.Button) -> None:
-        self.page = max(0, self.page - 1)
-        self._update_buttons()
-        await interaction.response.edit_message(embed=self.get_current_embed(), view=self)
+    def _refresh(self) -> None:
+        self.clear_items()
+        self.add_item(self.get_current_container())
 
-    @ui.button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="msg_next")
-    async def next_btn(self, interaction: discord.Interaction, button: ui.Button) -> None:
+        self.prev_btn.disabled = (self.page == 0)
+        self.next_btn.disabled = (self.page >= self.max_pages - 1)
+
+        row = ui.ActionRow()
+        row.add_item(self.prev_btn)
+        row.add_item(self.next_btn)
+        self.add_item(row)
+
+    async def _on_prev(self, interaction: discord.Interaction) -> None:
+        self.page = max(0, self.page - 1)
+        self._refresh()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_next(self, interaction: discord.Interaction) -> None:
         self.page = min(self.max_pages - 1, self.page + 1)
-        self._update_buttons()
-        await interaction.response.edit_message(embed=self.get_current_embed(), view=self)
+        self._refresh()
+        await interaction.response.edit_message(view=self)
 
 
 class ChannelSelectFallbackView(ui.View):
@@ -204,42 +238,64 @@ class ChannelSelectFallbackView(ui.View):
             model=settings.model_override,
         )
 
-        embed = build_profile_embed(profile, self.target_member, interaction.guild)
         report_view = ProfileReportView(
             profile=profile,
             target_member=self.target_member,
             client=self.client,
+            guild=interaction.guild,
             db=self.db,
             requested_count=self.requested_count,
         )
 
         await interaction.edit_original_response(
             content=f"✅ Fetched history from {channel.mention} (found `{len(target_msgs)}` user messages, cached `{total_cached}` total messages across all users).",
-            embed=embed,
             view=report_view,
         )
 
 
-class ProfileReportView(ui.View):
-    """Action view attached to the final dossier embed."""
+class ProfileReportView(ui.LayoutView):
+    """Action view attached to the final dossier Components v2 Container."""
 
     def __init__(
         self,
         profile: UserProfileData,
         target_member: discord.Member,
         client: AsyncTypeSafe,
+        guild: Optional[discord.Guild] = None,
         db: Database = db_instance,
         requested_count: int = 25,
+        container: Optional[discord.ui.Container] = None,
     ) -> None:
         super().__init__(timeout=300)
         self.profile = profile
         self.target_member = target_member
         self.client = client
+        self.guild = guild or (target_member.guild if hasattr(target_member, "guild") else None)
         self.db = db
         self.requested_count = requested_count
 
-    @ui.button(label="View Messages", style=discord.ButtonStyle.secondary, emoji="📜")
-    async def view_messages_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
+        if container is not None:
+            self.container = container
+        elif self.guild:
+            self.container = build_profile_container(self.profile, self.target_member, self.guild)
+        else:
+            self.container = create_container(
+                body=f"## 👤 Member Dossier — {self.target_member.display_name}\n{self.profile.summary}"
+            )
+
+        self.add_item(self.container)
+
+        self.view_messages_btn = ui.Button(label="View Messages", style=discord.ButtonStyle.secondary, emoji="📜")
+        self.view_messages_btn.callback = self.view_messages_callback
+        self.rescan_btn = ui.Button(label="Scan Another Channel", style=discord.ButtonStyle.primary, emoji="🔄")
+        self.rescan_btn.callback = self.rescan_callback
+
+        action_row = ui.ActionRow()
+        action_row.add_item(self.view_messages_btn)
+        action_row.add_item(self.rescan_btn)
+        self.add_item(action_row)
+
+    async def view_messages_callback(self, interaction: discord.Interaction) -> None:
         if not self.profile.sampled_messages:
             await interaction.response.send_message("ℹ️ No sampled messages available to display.", ephemeral=True)
             return
@@ -249,13 +305,11 @@ class ProfileReportView(ui.View):
             member_name=self.target_member.display_name,
         )
         await interaction.response.send_message(
-            embed=paginator.get_current_embed(),
             view=paginator,
             ephemeral=True,
         )
 
-    @ui.button(label="Scan Another Channel", style=discord.ButtonStyle.primary, emoji="🔄")
-    async def rescan_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
+    async def rescan_callback(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.moderate_members:
             await interaction.response.send_message("❌ Only moderators can use this action.", ephemeral=True)
             return

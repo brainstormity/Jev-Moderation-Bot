@@ -18,8 +18,11 @@ from main import (
     set_mod_log,
     set_thresholds,
     set_timeouts,
+    sync,
     unset_mod_log,
     user_offenses,
+    on_message,
+    bot,
 )
 
 TEST_CMD_DB = "test_commands_data.db"
@@ -175,11 +178,14 @@ async def test_user_offenses_command(setup_test_db: Database):
     interaction.response.send_message.reset_mock()
     await user_offenses.callback(interaction, target_user)
     kwargs = interaction.response.send_message.call_args[1]
-    embed = kwargs.get("embed")
-    assert embed is not None
-    assert "Infraction History — BadActor" in embed.title
-    assert len(embed.fields) == 1
-    assert "phishing link" in embed.fields[0].value
+    view = kwargs.get("view")
+    assert view is not None
+    comps = view.to_components()
+    assert len(comps) == 1
+    assert comps[0]["type"] == 17
+    comps_str = str(comps)
+    assert "Infraction History — BadActor" in comps_str
+    assert "phishing link" in comps_str
 
 
 @pytest.mark.asyncio
@@ -261,29 +267,34 @@ async def test_mod_config_command(setup_test_db: Database):
     interaction = make_mock_interaction()
     await mod_config.callback(interaction)
     kwargs = interaction.response.send_message.call_args[1]
-    embed = kwargs.get("embed")
-    assert embed is not None
-    assert "Moderation Settings" in embed.title
+    view = kwargs.get("view")
+    assert view is not None
+    comps = view.to_components()
+    assert len(comps) == 1
+    assert comps[0]["type"] == 17
+    assert "Moderation Settings" in comps[0]["components"][0]["content"]
 
 
 @pytest.mark.asyncio
 async def test_help_command():
-    """Verify /help returns an ephemeral embed listing moderation commands."""
+    """Verify /help returns an ephemeral container view listing moderation commands."""
     interaction = make_mock_interaction()
     await help_command.callback(interaction)
 
     interaction.response.send_message.assert_called_once()
     kwargs = interaction.response.send_message.call_args[1]
     assert kwargs.get("ephemeral") is True
-    embed = kwargs.get("embed")
-    assert embed is not None
-    assert "Moderation Commands Reference" in embed.title
-
-    field_names = [f.name for f in embed.fields]
-    assert "Member Intelligence" in field_names
-    assert "Moderation Actions" in field_names
-    assert "Configuration (Administrator)" in field_names
-    assert "Shortcuts" in field_names
+    view = kwargs.get("view")
+    assert view is not None
+    comps = view.to_components()
+    assert len(comps) == 1
+    assert comps[0]["type"] == 17
+    body_text = comps[0]["components"][0]["content"]
+    assert "Moderation Commands Reference" in body_text
+    assert "Member Intelligence" in body_text
+    assert "Moderation Actions" in body_text
+    assert "Configuration (Administrator)" in body_text
+    assert "Shortcuts" in body_text
 
 
 class unittest_any:

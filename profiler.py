@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import discord
 
 from typesafe import AsyncTypeSafe, Choice, Noul, TypeSafeEvaluationResponse
+from container import ReplyView, create_container
 
 logger = logging.getLogger("profiler")
 
@@ -232,6 +233,82 @@ async def evaluate_user_profile(
         summary=summary,
         sampled_messages=messages,
     )
+
+
+def build_profile_reply_view(
+    profile: UserProfileData, member: discord.Member, guild: discord.Guild
+) -> ReplyView:
+    """Build a rich Discord Components v2 ReplyView presenting the full behavioral dossier."""
+    persona_emojis = {
+        "VALUED_REGULAR": "🌟",
+        "BENIGN_NEWBIE": "🐣",
+        "CASUAL_CHATTER": "💬",
+        "UNSOLICITED_PROMOTER": "📢",
+        "VOLATILE_TROLL": "⚡",
+        "SUSPICIOUS_ACCOUNT": "🚨",
+    }
+    emoji = persona_emojis.get(profile.persona, "👤")
+    fresh_warning = " 🚨 *(Fresh Account)*" if profile.account_age_days < 7 else ""
+
+    radar_lines = [
+        f"- **Scam / Threat**: {render_progress_bar(profile.scam_score)}",
+        f"- **Spam / Promo**: {render_progress_bar(profile.spam_score)}",
+        f"- **Noobness**: {render_progress_bar(profile.noob_score)}",
+        f"- **Toxicity**: {render_progress_bar(profile.toxic_score)}",
+        f"- **Helpfulness**: {render_progress_bar(profile.helpful_score)}",
+    ]
+
+    header_section = (
+        f"## {emoji} Member Dossier — {member.display_name}\n"
+        f"**Member**: {member.mention} (`{member.id}`)\n"
+        f"**Primary Persona**: `{profile.persona}` (Conf: `{profile.persona_confidence:.0%}`)\n"
+        f"**Recommended Action**: `{profile.recommended_action}`"
+    )
+
+    metadata_section = (
+        f"### 📋 Account & Guild Metadata\n"
+        f"• **Account Age**: `{profile.account_age_days}` days{fresh_warning}\n"
+        f"• **Joined Server**: `{profile.server_age_days}` days ago\n"
+        f"• **Sampled Messages**: `{profile.sampled_message_count}`\n"
+        f"• **Prior Infractions**: `{profile.prior_offense_count}` recorded"
+    )
+
+    radar_section = (
+        f"### 📊 Behavioral Radar\n"
+        + "\n".join(radar_lines)
+    )
+
+    synthesis_section = (
+        f"### 🧠 AI Behavioral Synthesis\n"
+        f"{profile.summary}"
+    )
+
+    avatar_url = member.display_avatar.url if member.display_avatar else None
+
+    reply = ReplyView(
+        header_section,
+        thumbnail_url=avatar_url,
+        accent_color=None,
+        include_footer=False,
+    )
+    reply.add_separator(spacing=discord.SeparatorSpacing.small, visible=True)
+    reply.add_body(metadata_section)
+    reply.add_separator(spacing=discord.SeparatorSpacing.small, visible=True)
+    reply.add_body(radar_section)
+    reply.add_separator(spacing=discord.SeparatorSpacing.small, visible=True)
+    reply.add_body(synthesis_section)
+    reply.add_footer(
+        f"Server: {guild.name} • Analyzed {profile.sampled_message_count} messages",
+        visible=True,
+    )
+    return reply
+
+
+def build_profile_container(
+    profile: UserProfileData, member: discord.Member, guild: discord.Guild
+) -> discord.ui.Container:
+    """Build a rich Discord Components v2 Container presenting the full behavioral dossier."""
+    return build_profile_reply_view(profile, member, guild)._container
 
 
 def build_profile_embed(profile: UserProfileData, member: discord.Member, guild: discord.Guild) -> discord.Embed:

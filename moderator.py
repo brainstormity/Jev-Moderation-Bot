@@ -18,6 +18,7 @@ from discord import ui
 
 from database import Database, GuildSettings, db_instance
 from typesafe import AsyncTypeSafe, Choice, Noul, TypeSafeEvaluationResponse
+from container import create_container, create_container_view
 
 logger = logging.getLogger("moderator")
 
@@ -39,24 +40,34 @@ def build_state_summary(message: discord.Message, recent_false_flags: Optional[L
     ]
 
     if recent_false_flags:
-        state_lines.append("\n=== COMMUNITY VERIFIED PRECEDENTS (CONFIRMED LEGITIMATE BY ADMINS) ===")
-        state_lines.append("The following message styles/contents were previously flagged but verified SAFE by administrators:")
-        for idx, flag in enumerate(recent_false_flags[:5], 1):
-            clean_flag = flag.replace("\n", " ").strip()[:150]
-            state_lines.append(f"{idx}. \"{clean_flag}\"")
+        state_lines.append("\n=== RECENT SERVER SAFE PRECEDENTS (FALSE POSITIVES TO LEARN FROM) ===")
+        for idx, flag in enumerate(recent_false_flags, 1):
+            clean_flag = flag.replace("\n", " ").strip()
+            state_lines.append(f"Precedent #{idx}: {clean_flag}")
 
     state_lines.extend([
-        "\n=== MESSAGE CONTENT TO EVALUATE ===",
+        "\n=== MESSAGE EVALUATION TARGET ===",
         message.content,
     ])
 
     return "\n".join(state_lines)
 
 
-async def send_user_dm(member: discord.Member, embed: discord.Embed) -> bool:
+async def send_user_dm(
+    member: discord.Member,
+    content_item: discord.ui.Container | discord.ui.LayoutView | discord.Embed,
+) -> bool:
     """Safely deliver a direct warning message to a user, handling closed DMs gracefully."""
     try:
-        await member.send(embed=embed)
+        if isinstance(content_item, discord.ui.Container):
+            view = create_container_view(content_item)
+            await member.send(view=view)
+        elif isinstance(content_item, discord.ui.LayoutView):
+            await member.send(view=content_item)
+        elif isinstance(content_item, discord.Embed):
+            await member.send(embed=content_item)
+        else:
+            await member.send(content=str(content_item))
         return True
     except (discord.Forbidden, discord.HTTPException) as exc:
         logger.warning("Could not send DM to user %s (%s): %s", member.id, member.name, exc)
@@ -104,6 +115,19 @@ class PardonConfirmView(ui.View):
 
         # Update original mod-log message
         try:
+            timestamp = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            resolved_container = create_container(
+                body=(
+                    f"## 🟢 [PARDONED AS FALSE FLAG] Moderation Alert\n"
+                    f"**Offense ID**: `#{self.offense_id}` | **Target User**: <@{self.user_id}>\n\n"
+                    f"### 📝 Resolution\n"
+                    f"Pardoned by {interaction.user.mention} (<t:{timestamp}:R>).\n"
+                    f"*Precedent saved to improve Jev AI runtime memory.*"
+                ),
+                accent_color=0x57F287,
+                footer_text=f"Offense ID: #{self.offense_id} • TypeSafe Jev System One • Pardoned",
+            )
+            resolved_view = create_container_view(resolved_container)
             if self.parent_message.embeds:
                 old_embed = self.parent_message.embeds[0]
                 resolved_embed = old_embed.copy()
@@ -111,11 +135,13 @@ class PardonConfirmView(ui.View):
                 resolved_embed.title = f"🟢 [PARDONED AS FALSE FLAG] {old_embed.title or 'Moderation Alert'}"
                 resolved_embed.add_field(
                     name="Resolution",
-                    value=f"Pardoned by {interaction.user.mention} (<t:{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}:R>).\n"
+                    value=f"Pardoned by {interaction.user.mention} (<t:{timestamp}:R>).\n"
                           f"*Precedent saved to improve Jev AI runtime memory.*",
                     inline=False,
                 )
-                await self.parent_message.edit(embed=resolved_embed, view=None)
+                await self.parent_message.edit(embed=resolved_embed, view=resolved_view)
+            else:
+                await self.parent_message.edit(view=resolved_view)
         except Exception as exc:
             logger.warning("Could not update parent mod-log message: %s", exc)
 
@@ -170,6 +196,18 @@ class BanConfirmView(ui.View):
 
         # Update original mod-log message
         try:
+            timestamp = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            resolved_container = create_container(
+                body=(
+                    f"## 🔴 [USER PERMANENTLY BANNED] Moderation Alert\n"
+                    f"**Offense ID**: `#{self.offense_id}` | **Target User**: <@{self.user_id}>\n\n"
+                    f"### 📝 Resolution\n"
+                    f"Permanently banned by {interaction.user.mention} (<t:{timestamp}:R>)."
+                ),
+                accent_color=0xED4245,
+                footer_text=f"Offense ID: #{self.offense_id} • TypeSafe Jev System One • Banned",
+            )
+            resolved_view = create_container_view(resolved_container)
             if self.parent_message.embeds:
                 old_embed = self.parent_message.embeds[0]
                 resolved_embed = old_embed.copy()
@@ -177,10 +215,12 @@ class BanConfirmView(ui.View):
                 resolved_embed.title = f"🔴 [USER PERMANENTLY BANNED] {old_embed.title or 'Moderation Alert'}"
                 resolved_embed.add_field(
                     name="Resolution",
-                    value=f"Permanently banned by {interaction.user.mention} (<t:{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}:R>).",
+                    value=f"Permanently banned by {interaction.user.mention} (<t:{timestamp}:R>).",
                     inline=False,
                 )
-                await self.parent_message.edit(embed=resolved_embed, view=None)
+                await self.parent_message.edit(embed=resolved_embed, view=resolved_view)
+            else:
+                await self.parent_message.edit(view=resolved_view)
         except Exception as exc:
             logger.warning("Could not update parent mod-log message: %s", exc)
 
@@ -194,24 +234,49 @@ class BanConfirmView(ui.View):
         await interaction.response.edit_message(content="Action cancelled. User was not banned.", view=None)
 
 
-class ModLogActionView(ui.View):
-    """Action view attached to #mod-log embeds, restricted strictly to Administrators."""
+class ModLogActionView(ui.LayoutView):
+    """Action view attached to #mod-log Components v2 Container, restricted strictly to Administrators."""
 
     def __init__(
         self,
         offense_id: int,
         user_id: int,
         guild_id: int,
+        container: Optional[discord.ui.Container] = None,
         db: Database = db_instance,
     ) -> None:
         super().__init__(timeout=None)  # Persistent view
         self.offense_id = offense_id
         self.user_id = user_id
         self.guild_id = guild_id
+        self.container = container
         self.db = db
 
-    @ui.button(label="Pardon (False Flag)", style=discord.ButtonStyle.success, emoji="🟢", custom_id="modlog_pardon")
-    async def pardon_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
+        if self.container is not None:
+            self.add_item(self.container)
+
+        self.pardon_button = ui.Button(
+            label="Pardon (False Flag)",
+            style=discord.ButtonStyle.success,
+            emoji="🟢",
+            custom_id="modlog_pardon",
+        )
+        self.pardon_button.callback = self._pardon_callback
+
+        self.ban_button = ui.Button(
+            label="Ban User",
+            style=discord.ButtonStyle.danger,
+            emoji="🔴",
+            custom_id="modlog_ban",
+        )
+        self.ban_button.callback = self._ban_callback
+
+        action_row = ui.ActionRow()
+        action_row.add_item(self.pardon_button)
+        action_row.add_item(self.ban_button)
+        self.add_item(action_row)
+
+    async def _pardon_callback(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ Only server administrators can pardon moderation offenses.", ephemeral=True)
             return
@@ -233,8 +298,7 @@ class ModLogActionView(ui.View):
             ephemeral=True,
         )
 
-    @ui.button(label="Ban User", style=discord.ButtonStyle.danger, emoji="🔴", custom_id="modlog_ban")
-    async def ban_button(self, interaction: discord.Interaction, button: ui.Button) -> None:
+    async def _ban_callback(self, interaction: discord.Interaction) -> None:
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ Only server administrators can ban users.", ephemeral=True)
             return
@@ -247,8 +311,10 @@ class ModLogActionView(ui.View):
             db=self.db,
         )
         await interaction.response.send_message(
-            content=f"⚠️ **Confirm Permanent Ban**\n"
-                    f"Are you sure you want to permanently ban <@{self.user_id}> from **{interaction.guild.name}**?",
+            content="🔨 **Confirm Permanent Server Ban**\n"
+                    f"Are you sure you want to permanently ban <@{self.user_id}> from the server?\n"
+                    "• This action cannot be undone automatically.\n"
+                    "• Escalates the offense record to permanent BAN.",
             view=confirm_view,
             ephemeral=True,
         )
@@ -352,41 +418,47 @@ class MessageModerator:
 
         action_taken = ""
         timeout_minutes = 0
-        dm_embed = discord.Embed(
-            title=f"🛡️ Message Removed in {guild.name}",
-            color=discord.Color.red() if is_tier1 else discord.Color.orange(),
-            timestamp=datetime.datetime.now(datetime.timezone.utc),
-        )
-        dm_embed.add_field(name="Violation Category", value=f"`{choice}`", inline=True)
-        dm_embed.add_field(name="Detection Severity", value=tier_label, inline=True)
-        dm_embed.add_field(name="Removed Message", value=f"```{message.content[:200]}```", inline=False)
+        accent_color = 0xED4245 if is_tier1 else 0xE67E22
 
         if current_offense_num == 1:
             action_taken = "WARN_1_DM"
-            dm_embed.description = (
+            warning_headline = (
                 "⚠️ **First Warning**: Your message was flagged by automated moderation for spam/scam and removed.\n"
                 "Please review the server rules. Continued infractions will result in temporary timeouts and bans."
             )
         elif current_offense_num == 2:
             action_taken = "WARN_2_DM"
-            dm_embed.description = (
+            warning_headline = (
                 "⚠️ **Final Warning**: This is your **2nd moderation infraction** in this server.\n"
                 "Any subsequent violations will result in immediate timeouts."
             )
         elif current_offense_num == 3:
             timeout_minutes = settings.first_timeout_minutes
             action_taken = f"TIMEOUT_{timeout_minutes}M"
-            dm_embed.description = (
+            warning_headline = (
                 f"⏱️ **Timeout Applied (3rd Infraction)**: You have been placed on a **{timeout_minutes}-minute timeout**.\n"
                 "Further violations will trigger longer timeouts or a permanent server ban."
             )
         else:
             timeout_minutes = settings.subsequent_timeout_minutes
             action_taken = f"TIMEOUT_{timeout_minutes}M"
-            dm_embed.description = (
+            warning_headline = (
                 f"⏱️ **Extended Timeout Applied ({current_offense_num}th Infraction)**: You have been placed on a **{timeout_minutes}-minute timeout**.\n"
                 "Please contact a server administrator if you believe this was an error."
             )
+
+        dm_body = (
+            f"## 🛡️ Message Removed in {guild.name}\n"
+            f"{warning_headline}\n\n"
+            f"• **Violation Category**: `{choice}`\n"
+            f"• **Detection Severity**: {tier_label}\n\n"
+            f"**Removed Message**:\n```{message.content[:200]}```"
+        )
+        dm_container = create_container(
+            body=dm_body,
+            accent_color=accent_color,
+            footer_text=f"Server: {guild.name} • Offense #{current_offense_num}",
+        )
 
         # Apply timeout if applicable (written to Server Audit Log)
         if timeout_minutes > 0 and isinstance(message.author, discord.Member):
@@ -401,7 +473,7 @@ class MessageModerator:
         # Deliver Warning DM
         dm_delivered = False
         if isinstance(message.author, discord.Member):
-            dm_delivered = await send_user_dm(message.author, dm_embed)
+            dm_delivered = await send_user_dm(message.author, dm_container)
 
         # 7. Record offense in database
         offense_id, _ = await self.db.record_offense(
@@ -423,32 +495,35 @@ class MessageModerator:
                 # Verify bot permissions in channel
                 bot_member = guild.me
                 perms = mod_channel.permissions_for(bot_member)
-                if perms.view_channel and perms.send_messages and perms.embed_links:
-                    embed = discord.Embed(
-                        title=f"🛡️ TypeSafe Moderation Alert — {tier_label}",
-                        color=discord.Color.red() if is_tier1 else discord.Color.orange(),
-                        timestamp=datetime.datetime.now(datetime.timezone.utc),
+                if perms.view_channel and perms.send_messages:
+                    dm_status_str = "Delivered ✅" if dm_delivered else "Undelivered (DMs Closed) ❌"
+                    clean_content = message.content.replace("```", "")[:500]
+                    alert_body = (
+                        f"## 🛡️ TypeSafe Moderation Alert — {tier_label}\n"
+                        f"• **User**: {message.author.mention} (`{message.author.id}`)\n"
+                        f"• **Channel**: {message.channel.mention}\n"
+                        f"• **Offense Stage**: **Offense #{current_offense_num}** ({action_taken})\n"
+                        f"• **Classification**: `{choice}` (Conf: `{confidence:.1%}`)\n"
+                        f"• **Noul (Ban Urgency)**: `{noul:.1%}`\n"
+                        f"• **DM Status**: {dm_status_str}\n\n"
+                        f"**Message Content**:\n```{clean_content}```"
                     )
-                    embed.add_field(name="User", value=f"{message.author.mention} (`{message.author.id}`)", inline=True)
-                    embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-                    embed.add_field(name="Offense Stage", value=f"**Offense #{current_offense_num}** ({action_taken})", inline=True)
-
-                    embed.add_field(name="Classification", value=f"`{choice}` (Conf: `{confidence:.1%}`)", inline=True)
-                    embed.add_field(name="Noul (Ban Urgency)", value=f"`{noul:.1%}`", inline=True)
-                    embed.add_field(name="DM Status", value="Delivered ✅" if dm_delivered else "Undelivered (DMs Closed) ❌", inline=True)
-
-                    embed.add_field(name="Message Content", value=f"```{message.content[:500]}```", inline=False)
-                    embed.set_footer(text=f"Offense ID: #{offense_id} • TypeSafe Jev System One")
+                    alert_container = create_container(
+                        body=alert_body,
+                        accent_color=0xED4245 if is_tier1 else 0xE67E22,
+                        footer_text=f"Offense ID: #{offense_id} • TypeSafe Jev System One",
+                    )
 
                     action_view = ModLogActionView(
                         offense_id=offense_id,
                         user_id=message.author.id,
                         guild_id=guild.id,
+                        container=alert_container,
                         db=self.db,
                     )
                     try:
-                        await mod_channel.send(embed=embed, view=action_view)
+                        await mod_channel.send(view=action_view)
                     except Exception as exc:
-                        logger.warning("Could not send embed to mod-log channel %s: %s", mod_channel.id, exc)
+                        logger.warning("Could not send alert to mod-log channel %s: %s", mod_channel.id, exc)
 
         return True
