@@ -300,3 +300,103 @@ async def test_help_command():
 class unittest_any:
     def __eq__(self, other):
         return True
+
+
+@pytest.mark.asyncio
+async def test_sync_command_global():
+    """Verify !sync syncs commands globally when no guilds or spec provided."""
+    ctx = AsyncMock()
+    ctx.bot = AsyncMock()
+    ctx.bot.tree = AsyncMock()
+    ctx.bot.tree.sync = AsyncMock(return_value=["cmd1", "cmd2", "cmd3"])
+    ctx.send = AsyncMock()
+
+    await sync.callback(ctx, guilds=[], spec=None)
+
+    ctx.bot.tree.sync.assert_called_once_with()
+    ctx.send.assert_called_once_with("Synced 3 commands globally")
+
+
+@pytest.mark.asyncio
+async def test_sync_command_guild_spec_tilde():
+    """Verify !sync ~ syncs commands to the current guild."""
+    ctx = AsyncMock()
+    ctx.guild = AsyncMock()
+    ctx.bot = AsyncMock()
+    ctx.bot.tree = AsyncMock()
+    ctx.bot.tree.sync = AsyncMock(return_value=["cmd1"])
+    ctx.send = AsyncMock()
+
+    await sync.callback(ctx, guilds=[], spec="~")
+
+    ctx.bot.tree.sync.assert_called_once_with(guild=ctx.guild)
+    ctx.send.assert_called_once_with("Synced 1 commands to the current guild.")
+
+
+@pytest.mark.asyncio
+async def test_sync_command_guild_spec_copy():
+    """Verify !sync * copies global commands to current guild and syncs."""
+    ctx = AsyncMock()
+    ctx.guild = AsyncMock()
+    ctx.bot = AsyncMock()
+    ctx.bot.tree = AsyncMock()
+    ctx.bot.tree.copy_global_to = MagicMock()
+    ctx.bot.tree.sync = AsyncMock(return_value=["cmd1", "cmd2"])
+    ctx.send = AsyncMock()
+
+    await sync.callback(ctx, guilds=[], spec="*")
+
+    ctx.bot.tree.copy_global_to.assert_called_once_with(guild=ctx.guild)
+    ctx.bot.tree.sync.assert_called_once_with(guild=ctx.guild)
+    ctx.send.assert_called_once_with("Synced 2 commands to the current guild.")
+
+
+@pytest.mark.asyncio
+async def test_sync_command_guild_spec_clear():
+    """Verify !sync ^ clears all commands from current guild and syncs."""
+    ctx = AsyncMock()
+    ctx.guild = AsyncMock()
+    ctx.bot = AsyncMock()
+    ctx.bot.tree = AsyncMock()
+    ctx.bot.tree.clear_commands = MagicMock()
+    ctx.bot.tree.sync = AsyncMock(return_value=[])
+    ctx.send = AsyncMock()
+
+    await sync.callback(ctx, guilds=[], spec="^")
+
+    ctx.bot.tree.clear_commands.assert_called_once_with(guild=ctx.guild)
+    ctx.bot.tree.sync.assert_called_once_with(guild=ctx.guild)
+    ctx.send.assert_called_once_with("Synced 0 commands to the current guild.")
+
+
+@pytest.mark.asyncio
+async def test_sync_command_specific_guild_objects():
+    """Verify !sync id_1 id_2 syncs specified guilds."""
+    ctx = AsyncMock()
+    ctx.bot = AsyncMock()
+    ctx.bot.tree = AsyncMock()
+    ctx.bot.tree.sync = AsyncMock()
+    ctx.send = AsyncMock()
+
+    g1 = discord.Object(id=111)
+    g2 = discord.Object(id=222)
+
+    await sync.callback(ctx, guilds=[g1, g2], spec=None)
+
+    assert ctx.bot.tree.sync.call_count == 2
+    ctx.send.assert_called_once_with("Synced the tree to 2/2.")
+
+
+@pytest.mark.asyncio
+async def test_on_message_direct_message_processes_commands():
+    """Verify on_message forwards DM commands to bot.process_commands."""
+    msg = AsyncMock(spec=discord.Message)
+    msg.author = AsyncMock()
+    msg.author.bot = False
+    msg.guild = None
+    msg.content = "!sync"
+
+    with patch.object(bot, "process_commands", new_callable=AsyncMock) as mock_process:
+        await on_message(msg)
+        mock_process.assert_called_once_with(msg)
+
