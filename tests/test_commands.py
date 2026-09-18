@@ -12,6 +12,7 @@ import pytest_asyncio
 from database import Database, db_instance
 from main import (
     export_feedback,
+    help_command,
     mod_config,
     pardon_user,
     set_mod_log,
@@ -263,6 +264,26 @@ async def test_mod_config_command(setup_test_db: Database):
     embed = kwargs.get("embed")
     assert embed is not None
     assert "Moderation Settings" in embed.title
+
+
+@pytest.mark.asyncio
+async def test_help_command():
+    """Verify /help returns an ephemeral embed listing moderation commands."""
+    interaction = make_mock_interaction()
+    await help_command.callback(interaction)
+
+    interaction.response.send_message.assert_called_once()
+    kwargs = interaction.response.send_message.call_args[1]
+    assert kwargs.get("ephemeral") is True
+    embed = kwargs.get("embed")
+    assert embed is not None
+    assert "Moderation Commands Reference" in embed.title
+
+    field_names = [f.name for f in embed.fields]
+    assert "Member Intelligence" in field_names
+    assert "Moderation Actions" in field_names
+    assert "Configuration (Administrator)" in field_names
+    assert "Shortcuts" in field_names
 
 
 class unittest_any:

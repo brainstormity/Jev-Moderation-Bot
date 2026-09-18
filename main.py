@@ -496,6 +496,68 @@ async def profile_user_context(interaction: discord.Interaction, user: discord.M
     await interaction.followup.send(embed=embed, view=report_view, ephemeral=True)
 
 
+@bot.tree.command(name="help", description="List all available moderation and administration commands.")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def help_command(interaction: discord.Interaction) -> None:
+    """Show available bot commands and descriptions for staff."""
+    if not interaction.guild:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Moderation Commands Reference",
+        description="Available commands for server moderators and administrators:",
+        color=discord.Color.blurple(),
+    )
+
+    embed.add_field(
+        name="Member Intelligence",
+        value=(
+            "`/profile <user> [count] [channel]`\n"
+            "Build an AI behavioral profile (scam, spam, noobness, toxicity, helpfulness) from recent messages.\n\n"
+            "`/user-offenses <user>`\n"
+            "View a member's complete infraction timeline and recorded messages."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Moderation Actions",
+        value=(
+            "`/pardon <user>`\n"
+            "Manually lift active timeouts, pardon the latest offense, and train safe precedent memory."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Configuration (Administrator)",
+        value=(
+            "`/set-mod-log <channel>`\n"
+            "Set the alert log channel with interactive 1-click action buttons.\n\n"
+            "`/unset-mod-log`\n"
+            "Remove the alert channel (actions still write to native Discord audit logs).\n\n"
+            "`/set-timeouts <first_mins> <subsequent_mins>`\n"
+            "Configure timeout durations for 3rd and 4th+ offenses.\n\n"
+            "`/set-thresholds <tier1> <tier2>`\n"
+            "Adjust AI confidence sensitivity thresholds.\n\n"
+            "`/mod-config`\n"
+            "Display current server settings, timeout lengths, and active false-flag memory count.\n\n"
+            "`/export-feedback [json|csv]`\n"
+            "Export false flags and confirmed threat records for offline review."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Shortcuts",
+        value="Right-click any member -> **Apps** -> **Generate AI Profile** to profile them instantly.",
+        inline=False,
+    )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     """Handle application command permission errors gracefully."""

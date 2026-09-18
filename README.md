@@ -30,6 +30,7 @@ A Discord moderation bot built with Python and TypeSafe AI (Jev System One). It 
 | `/pardon` | `user` | Administrator | Manually lifts a timeout, pardons the latest offense, and saves it as safe memory. |
 | `/export-feedback`| `file_format` (json/csv) | Administrator | Exports flagged messages and pardon history for offline review. |
 | `/mod-config` | None | Administrator | Shows current server settings and active false-flag precedent count. |
+| `/help` | None | Moderate Members | Displays an ephemeral reference guide of all available commands. |
 
 You can also right-click any user in Discord -> **Apps** -> **Generate AI Profile** to profile them directly.
 
