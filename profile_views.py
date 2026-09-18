@@ -8,7 +8,6 @@ Includes:
 
 from __future__ import annotations
 
-import datetime
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,9 +15,9 @@ import discord
 from discord import ui
 
 from database import Database, db_instance
-from profiler import UserProfileData, build_profile_embed, build_profile_container, evaluate_user_profile
+from profiler import UserProfileData, build_profile_container, evaluate_user_profile
 from typesafe import AsyncTypeSafe
-from container import create_container, create_container_view
+from container import create_container
 
 logger = logging.getLogger("profiler.views")
 
@@ -114,29 +113,6 @@ class SampledMessagesPaginationView(ui.LayoutView):
             footer_text=f"Page {self.page + 1}/{self.max_pages}",
         )
 
-    def get_current_embed(self) -> discord.Embed:
-        """Legacy fallback embed for backwards compatibility."""
-        start = self.page * self.page_size
-        end = start + self.page_size
-        slice_msgs = self.messages[start:end]
-
-        embed = discord.Embed(
-            title=f"📜 Sampled Messages — {self.member_name}",
-            description=f"Showing messages `{start + 1}` to `{min(end, len(self.messages))}` of `{len(self.messages)}` total:",
-            color=discord.Color.dark_grey(),
-        )
-
-        for idx, m in enumerate(slice_msgs, start=start + 1):
-            ts = m.get("created_at", "Unknown")
-            clean_content = m.get("content", "").replace("```", "")[:250]
-            embed.add_field(
-                name=f"#{idx} • Channel <#{m.get('channel_id', 'unknown')}> • {ts}",
-                value=f"```{clean_content}```",
-                inline=False,
-            )
-
-        embed.set_footer(text=f"Page {self.page + 1}/{self.max_pages}")
-        return embed
 
     def _refresh(self) -> None:
         self.clear_items()

@@ -7,7 +7,6 @@ real-time on_message moderation pipeline.
 from __future__ import annotations
 
 import csv
-import datetime
 import io
 import json
 import logging
@@ -20,9 +19,9 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
-from database import Database, db_instance
+from database import db_instance
 from moderator import MessageModerator
-from profiler import build_profile_container, build_profile_embed, evaluate_user_profile
+from profiler import evaluate_user_profile
 from profile_views import ChannelSelectFallbackView, ProfileReportView, scrape_channel_history
 from typesafe import AsyncTypeSafe
 from container import create_container, create_container_view

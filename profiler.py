@@ -9,12 +9,12 @@ from __future__ import annotations
 import datetime
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import discord
 
 from typesafe import AsyncTypeSafe, Choice, Noul, TypeSafeEvaluationResponse
-from container import ReplyView, create_container
+from container import ReplyView
 
 logger = logging.getLogger("profiler")
 
@@ -310,72 +310,3 @@ def build_profile_container(
     """Build a rich Discord Components v2 Container presenting the full behavioral dossier."""
     return build_profile_reply_view(profile, member, guild)._container
 
-
-def build_profile_embed(profile: UserProfileData, member: discord.Member, guild: discord.Guild) -> discord.Embed:
-    """Build a rich Discord embed presenting the full behavioral dossier."""
-    # Determine color based on highest risk
-    if profile.scam_score >= 0.65 or profile.toxic_score >= 0.65:
-        color = discord.Color.red()
-    elif profile.spam_score >= 0.6 or profile.persona in ["UNSOLICITED_PROMOTER", "VOLATILE_TROLL"]:
-        color = discord.Color.gold()
-    elif profile.helpful_score >= 0.6 or profile.persona == "VALUED_REGULAR":
-        color = discord.Color.green()
-    else:
-        color = discord.Color.blurple()
-
-    persona_emojis = {
-        "VALUED_REGULAR": "🌟",
-        "BENIGN_NEWBIE": "🐣",
-        "CASUAL_CHATTER": "💬",
-        "UNSOLICITED_PROMOTER": "📢",
-        "VOLATILE_TROLL": "⚡",
-        "SUSPICIOUS_ACCOUNT": "🚨",
-    }
-    emoji = persona_emojis.get(profile.persona, "👤")
-
-    embed = discord.Embed(
-        title=f"{emoji} Member Dossier — {member.display_name}",
-        description=(
-            f"**Member**: {member.mention} (`{member.id}`)\n"
-            f"**Primary Persona**: `{profile.persona}` (Conf: `{profile.persona_confidence:.0%}`)\n"
-            f"**Recommended Action**: `{profile.recommended_action}`"
-        ),
-        color=color,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
-
-    if member.display_avatar:
-        embed.set_thumbnail(url=member.display_avatar.url)
-
-    # Member history metadata
-    fresh_warning = " 🚨 *(Fresh Account)*" if profile.account_age_days < 7 else ""
-    embed.add_field(
-        name="Account & Guild Metadata",
-        value=(
-            f"• **Account Age**: `{profile.account_age_days}` days{fresh_warning}\n"
-            f"• **Joined Server**: `{profile.server_age_days}` days ago\n"
-            f"• **Sampled Messages**: `{profile.sampled_message_count}`\n"
-            f"• **Prior Infractions**: `{profile.prior_offense_count}` recorded"
-        ),
-        inline=False,
-    )
-
-    # Behavioral Radar Bars
-    radar_lines = [
-        f"• **Scam / Threat**: {render_progress_bar(profile.scam_score)}",
-        f"• **Spam / Promo**: {render_progress_bar(profile.spam_score)}",
-        f"• **Noobness**: {render_progress_bar(profile.noob_score)}",
-        f"• **Toxicity**: {render_progress_bar(profile.toxic_score)}",
-        f"• **Helpfulness**: {render_progress_bar(profile.helpful_score)}",
-    ]
-    embed.add_field(name="📊 Behavioral Radar", value="\n".join(radar_lines), inline=False)
-
-    # Qualitative Assessment
-    embed.add_field(
-        name="🧠 AI Behavioral Synthesis",
-        value=f"{profile.summary}\n*(Evaluated via TypeSafe AI Jev System One)*",
-        inline=False,
-    )
-
-    embed.set_footer(text=f"Server: {guild.name} • Analyzed {profile.sampled_message_count} messages")
-    return embed

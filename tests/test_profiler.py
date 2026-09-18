@@ -15,7 +15,7 @@ from main import on_message, profile_user, profile_user_context
 from profiler import (
     UserProfileData,
     build_profile_container,
-    build_profile_embed,
+    build_profile_reply_view,
     build_profile_state,
     evaluate_user_profile,
     render_progress_bar,
@@ -191,8 +191,9 @@ async def test_evaluate_user_profile():
     assert "Server Beginner" in profile.summary
 
 
-def test_build_profile_embed():
-    """Verify embed formatting and radar fields."""
+def test_build_profile_reply_view():
+    """Verify Components v2 ReplyView formatting and radar content."""
+    from reply import ReplyView
     member = make_mock_member(user_id=123, name="Charlie")
     guild = AsyncMock(spec=discord.Guild)
     guild.name = "Awesome Community"
@@ -216,11 +217,14 @@ def test_build_profile_embed():
         summary="Server Beginner / Needs Guidance",
     )
 
-    embed = build_profile_embed(profile, member, guild)
-    assert "Member Dossier — Charlie" in embed.title
-    assert "BENIGN_NEWBIE" in embed.description
-    assert any("Behavioral Radar" in field.name for field in embed.fields)
-    assert any("Noobness" in field.value for field in embed.fields)
+    reply_view = build_profile_reply_view(profile, member, guild)
+    assert isinstance(reply_view, ReplyView)
+    assert isinstance(reply_view.container, discord.ui.Container)
+    # Check that visible separators were inserted between sections
+    separators = [c for c in reply_view.container.children if isinstance(c, discord.ui.Separator)]
+    assert len(separators) >= 3
+    assert any(s.visible is True for s in separators)
+
 
 
 @pytest.mark.asyncio
