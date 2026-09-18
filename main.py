@@ -513,10 +513,8 @@ async def help_command(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="Member Intelligence",
         value=(
-            "`/profile <user> [count] [channel]`\n"
-            "Build an AI behavioral profile (scam, spam, noobness, toxicity, helpfulness) from recent messages.\n\n"
-            "`/user-offenses <user>`\n"
-            "View a member's complete infraction timeline and recorded messages."
+            "`/profile` — Build an AI behavioral profile from recent messages.\n"
+            "`/user-offenses` — View a member's past infraction timeline."
         ),
         inline=False,
     )
@@ -524,8 +522,7 @@ async def help_command(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="Moderation Actions",
         value=(
-            "`/pardon <user>`\n"
-            "Manually lift active timeouts, pardon the latest offense, and train safe precedent memory."
+            "`/pardon` — Lift timeout and pardon a member's latest infraction."
         ),
         inline=False,
     )
@@ -533,25 +530,19 @@ async def help_command(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="Configuration (Administrator)",
         value=(
-            "`/set-mod-log <channel>`\n"
-            "Set the alert log channel with interactive 1-click action buttons.\n\n"
-            "`/unset-mod-log`\n"
-            "Remove the alert channel (actions still write to native Discord audit logs).\n\n"
-            "`/set-timeouts <first_mins> <subsequent_mins>`\n"
-            "Configure timeout durations for 3rd and 4th+ offenses.\n\n"
-            "`/set-thresholds <tier1> <tier2>`\n"
-            "Adjust AI confidence sensitivity thresholds.\n\n"
-            "`/mod-config`\n"
-            "Display current server settings, timeout lengths, and active false-flag memory count.\n\n"
-            "`/export-feedback [json|csv]`\n"
-            "Export false flags and confirmed threat records for offline review."
+            "`/set-mod-log` — Set the channel for moderation alerts.\n"
+            "`/unset-mod-log` — Remove the moderation alert channel.\n"
+            "`/set-timeouts` — Configure timeout durations for offenses.\n"
+            "`/set-thresholds` — Adjust AI detection sensitivity.\n"
+            "`/mod-config` — View current server moderation settings.\n"
+            "`/export-feedback` — Export false flags and threat logs."
         ),
         inline=False,
     )
 
     embed.add_field(
         name="Shortcuts",
-        value="Right-click any member -> **Apps** -> **Generate AI Profile** to profile them instantly.",
+        value="Right-click user -> **Apps** -> **Generate AI Profile**",
         inline=False,
     )
 
