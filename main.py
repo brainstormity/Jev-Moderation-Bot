@@ -33,29 +33,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot")
 
-# Setup Intents
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
+class JevModerationBot(commands.Bot):
+    """Custom Bot class using setup_hook for safe, one-time startup initialization."""
 
-bot = commands.Bot(command_prefix=config.COMMAND_PREFIX, intents=intents)
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        super().__init__(
+            command_prefix=config.COMMAND_PREFIX,
+            intents=intents,
+        )
+
+    async def setup_hook(self) -> None:
+        """One-time startup hook called before the bot connects to the Discord gateway."""
+        # 1. Initialize database schemas once
+        await db_instance.init_db()
+        logger.info("Connected to database successfully.")
+
+        # 2. Sync application slash commands once
+        try:
+            synced = await self.tree.sync()
+            logger.info("Synced %d application command(s).", len(synced))
+        except Exception as exc:
+            logger.error("Failed to sync application commands: %s", exc)
+
+    async def on_ready(self) -> None:
+        """Fires on initial ready and reconnects without re-running heavy startup logic."""
+        logger.info("Bot is ready as %s (ID: %s)", self.user, self.user.id if self.user else "N/A")
+
+
+bot = JevModerationBot()
 typesafe_client = AsyncTypeSafe(api_key=config.TYPESAFE_API_KEY)
 moderator = MessageModerator(client=typesafe_client, db=db_instance)
-
-
-@bot.event
-async def on_ready() -> None:
-    """Initialize database and sync application commands on startup."""
-    await db_instance.init_db()
-    logger.info("Connected to database successfully.")
-
-    try:
-        synced = await bot.tree.sync()
-        logger.info("Synced %d application command(s).", len(synced))
-    except Exception as exc:
-        logger.error("Failed to sync application commands: %s", exc)
-
-    logger.info("Bot is ready as %s (ID: %s)", bot.user, bot.user.id if bot.user else "N/A")
 
 
 @bot.event
