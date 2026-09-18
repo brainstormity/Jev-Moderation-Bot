@@ -21,6 +21,8 @@ from discord.ext import commands
 import config
 from database import Database, db_instance
 from moderator import MessageModerator
+from profiler import build_profile_embed, evaluate_user_profile
+from profile_views import ChannelSelectFallbackView, ProfileReportView, scrape_channel_history
 from typesafe import AsyncTypeSafe
 
 # Configure logging
@@ -58,19 +60,33 @@ async def on_ready() -> None:
 
 @bot.event
 async def on_message(message: discord.Message) -> None:
-    """Real-time message listener hooked into TypeSafe AI moderation."""
-    # 1. Ignore messages from bots
-    if message.author.bot:
+    """Real-time message listener hooked into TypeSafe AI moderation and rolling message cache."""
+    # 1. Ignore messages from bots or outside guilds
+    if message.author.bot or not message.guild:
         return
 
-    # 2. Run moderation pipeline
+    # 2. Persist to rolling message cache with accurate Discord created_at timestamp
+    if message.content.strip():
+        try:
+            await db_instance.save_user_message(
+                guild_id=message.guild.id,
+                channel_id=message.channel.id,
+                user_id=message.author.id,
+                message_id=message.id,
+                content=message.content,
+                created_at=message.created_at.isoformat(),
+            )
+        except Exception as exc:
+            logger.warning("Failed to cache message %s: %s", message.id, exc)
+
+    # 3. Run moderation pipeline
     try:
         was_moderated = await moderator.handle_message(message)
     except Exception as exc:
         logger.exception("Unexpected error in moderation handler: %s", exc)
         was_moderated = False
 
-    # 3. If message was not removed by moderation, allow normal command processing
+    # 4. If message was not removed by moderation, allow normal command processing
     if not was_moderated:
         await bot.process_commands(message)
 
@@ -331,6 +347,153 @@ async def mod_config(interaction: discord.Interaction) -> None:
     )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(
+    name="profile",
+    description="Build an AI behavioral dossier for a member (Noobness, Spam, Scam, Toxicity).",
+)
+@app_commands.describe(
+    user="The member whose behavioral profile you want to inspect",
+    message_count="Number of recent messages to analyze (10 to 100, default: 25)",
+    channel="Optional specific channel to scrape if local cache is insufficient",
+)
+@app_commands.checks.has_permissions(moderate_members=True)
+async def profile_user(
+    interaction: discord.Interaction,
+    user: discord.Member,
+    message_count: app_commands.Range[int, 10, 100] = 25,
+    channel: Optional[discord.TextChannel] = None,
+) -> None:
+    """Generate an AI behavioral profile for a member using local cache or targeted channel scrape."""
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    # Ephemeral deferral allows moderators to inspect privately without timing out
+    await interaction.response.defer(ephemeral=True)
+
+    guild_id = interaction.guild.id
+    settings = await db_instance.get_guild_settings(guild_id)
+    prior_offenses = await db_instance.get_user_offenses(guild_id, user.id, limit=10)
+
+    # 1. If a specific channel was explicitly provided, scrape it directly and backfill
+    if channel:
+        perms = channel.permissions_for(interaction.guild.me)
+        if not perms.read_message_history or not perms.view_channel:
+            await interaction.followup.send(
+                f"❌ The bot lacks `Read Message History` permission in {channel.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        await scrape_channel_history(
+            channel=channel,
+            target_user_id=user.id,
+            count=message_count,
+            max_scan=300,
+            db=db_instance,
+        )
+
+    # 2. Retrieve messages from local database
+    messages = await db_instance.get_user_recent_messages(guild_id, user.id, limit=message_count)
+
+    # 3. If no messages exist in DB, offer interactive channel dropdown fallback
+    if not messages:
+        fallback_view = ChannelSelectFallbackView(
+            target_member=user,
+            requested_count=message_count,
+            client=typesafe_client,
+            db=db_instance,
+            existing_cached_count=0,
+        )
+        await interaction.followup.send(
+            f"ℹ️ **No cached messages found for {user.mention}** in local database.\n"
+            f"Please select a channel from the dropdown below where {user.display_name} has been active to fetch their history:",
+            view=fallback_view,
+            ephemeral=True,
+        )
+        return
+
+    # 4. Generate AI profile
+    profile = await evaluate_user_profile(
+        client=typesafe_client,
+        member=user,
+        messages=messages,
+        prior_offenses=prior_offenses,
+        model=settings.model_override,
+    )
+
+    embed = build_profile_embed(profile, user, interaction.guild)
+    report_view = ProfileReportView(
+        profile=profile,
+        target_member=user,
+        client=typesafe_client,
+        db=db_instance,
+        requested_count=message_count,
+    )
+
+    notice = ""
+    if len(messages) < message_count and not channel:
+        notice = f"*(Note: Found only `{len(messages)}/{message_count}` messages in local cache. Use 'Scan Another Channel' below to pull more.)*\n"
+
+    await interaction.followup.send(
+        content=notice or None,
+        embed=embed,
+        view=report_view,
+        ephemeral=True,
+    )
+
+
+@bot.tree.context_menu(name="Generate AI Profile")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def profile_user_context(interaction: discord.Interaction, user: discord.Member) -> None:
+    """Right-click context menu shortcut to generate an AI profile for a member."""
+    if not interaction.guild:
+        await interaction.response.send_message("❌ This action can only be used in a server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    guild_id = interaction.guild.id
+    settings = await db_instance.get_guild_settings(guild_id)
+    prior_offenses = await db_instance.get_user_offenses(guild_id, user.id, limit=10)
+    messages = await db_instance.get_user_recent_messages(guild_id, user.id, limit=25)
+
+    if not messages:
+        fallback_view = ChannelSelectFallbackView(
+            target_member=user,
+            requested_count=25,
+            client=typesafe_client,
+            db=db_instance,
+            existing_cached_count=0,
+        )
+        await interaction.followup.send(
+            f"ℹ️ **No cached messages found for {user.mention}** in local database.\n"
+            f"Please select a channel below to fetch their history:",
+            view=fallback_view,
+            ephemeral=True,
+        )
+        return
+
+    profile = await evaluate_user_profile(
+        client=typesafe_client,
+        member=user,
+        messages=messages,
+        prior_offenses=prior_offenses,
+        model=settings.model_override,
+    )
+
+    embed = build_profile_embed(profile, user, interaction.guild)
+    report_view = ProfileReportView(
+        profile=profile,
+        target_member=user,
+        client=typesafe_client,
+        db=db_instance,
+        requested_count=25,
+    )
+
+    await interaction.followup.send(embed=embed, view=report_view, ephemeral=True)
 
 
 @bot.tree.error

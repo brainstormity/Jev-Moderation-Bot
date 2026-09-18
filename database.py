@@ -97,6 +97,31 @@ class Database:
                 ON moderation_feedback (guild_id, feedback_type, created_at DESC);
                 """
             )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    message_id INTEGER UNIQUE NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL
+                );
+                """
+            )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_messages_guild_user
+                ON user_messages (guild_id, user_id, created_at DESC);
+                """
+            )
+            await db.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_messages_message_id
+                ON user_messages (message_id);
+                """
+            )
             await db.commit()
 
     async def get_guild_settings(self, guild_id: int) -> GuildSettings:
@@ -391,5 +416,99 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
+    async def save_user_message(
+        self,
+        guild_id: int,
+        channel_id: int,
+        user_id: int,
+        message_id: int,
+        content: str,
+        created_at: str,
+    ) -> bool:
+        """Save a single user message with its original Discord created_at timestamp.
+
+        Duplicate message IDs are safely ignored via INSERT OR IGNORE.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO user_messages (
+                    guild_id, channel_id, user_id, message_id, content, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (guild_id, channel_id, user_id, message_id, content, created_at),
+            )
+            await db.commit()
+            return True
+
+    async def save_user_messages_bulk(
+        self,
+        messages_data: List[Tuple[int, int, int, int, str, str]],
+    ) -> int:
+        """Bulk insert messages for multiple users with INSERT OR IGNORE.
+
+        Tuples are: (guild_id, channel_id, user_id, message_id, content, created_at).
+        Returns the number of rows processed.
+        """
+        if not messages_data:
+            return 0
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.executemany(
+                """
+                INSERT OR IGNORE INTO user_messages (
+                    guild_id, channel_id, user_id, message_id, content, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                messages_data,
+            )
+            await db.commit()
+            return len(messages_data)
+
+    async def get_user_recent_messages(
+        self, guild_id: int, user_id: int, limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Retrieve the most recent messages for a specific user in a guild, ordered newest first."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, guild_id, channel_id, user_id, message_id, content, created_at
+                FROM user_messages
+                WHERE guild_id = ? AND user_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?;
+                """,
+                (guild_id, user_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def count_user_messages(self, guild_id: int, user_id: int) -> int:
+        """Return the total number of cached messages for a user in a guild."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT COUNT(*) FROM user_messages
+                WHERE guild_id = ? AND user_id = ?;
+                """,
+                (guild_id, user_id),
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+    async def prune_old_messages(self, days: int = 30) -> int:
+        """Prune messages older than a specified number of days."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM user_messages
+                WHERE created_at < datetime('now', '-' || ? || ' days');
+                """,
+                (days,),
+            )
+            await db.commit()
+            return cursor.rowcount
+
 
 db_instance = Database()
+
