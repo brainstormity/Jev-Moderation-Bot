@@ -48,7 +48,7 @@ def render_progress_bar(val: float, length: int = 10) -> str:
     empty = length - filled
     pct = int(clamped * 100)
     bar = "█" * filled + "░" * empty
-    return f"`[{bar}]` **{pct}%**"
+    return f"`{bar}` **{pct}%**"
 
 
 def build_profile_state(
@@ -251,26 +251,19 @@ def build_profile_reply_view(
     fresh_warning = " 🚨 *(Fresh Account)*" if profile.account_age_days < 7 else ""
 
     radar_lines = [
-        f"- **Scam / Threat**: {render_progress_bar(profile.scam_score)}",
-        f"- **Spam / Promo**: {render_progress_bar(profile.spam_score)}",
-        f"- **Noobness**: {render_progress_bar(profile.noob_score)}",
-        f"- **Toxicity**: {render_progress_bar(profile.toxic_score)}",
-        f"- **Helpfulness**: {render_progress_bar(profile.helpful_score)}",
+        f"- Scam / Threat: {render_progress_bar(profile.scam_score)}",
+        f"- Spam / Promo: {render_progress_bar(profile.spam_score)}",
+        f"- Noobness: {render_progress_bar(profile.noob_score)}",
+        f"- Toxicity: {render_progress_bar(profile.toxic_score)}",
+        f"- Helpfulness: {render_progress_bar(profile.helpful_score)}",
     ]
 
     header_section = (
-        f"## {emoji} Member Dossier — {member.display_name}\n"
-        f"**Member**: {member.mention} (`{member.id}`)\n"
-        f"**Primary Persona**: `{profile.persona}` (Conf: `{profile.persona_confidence:.0%}`)\n"
-        f"**Recommended Action**: `{profile.recommended_action}`"
-    )
-
-    metadata_section = (
-        f"### 📋 Account & Guild Metadata\n"
-        f"• **Account Age**: `{profile.account_age_days}` days{fresh_warning}\n"
-        f"• **Joined Server**: `{profile.server_age_days}` days ago\n"
-        f"• **Sampled Messages**: `{profile.sampled_message_count}`\n"
-        f"• **Prior Infractions**: `{profile.prior_offense_count}` recorded"
+        f"## {emoji} Investigating {member.display_name}\n"
+        f"> **Member**: {member.mention} (`{member.id}`)\n"
+        f"> **Primary Persona**: `{profile.persona}` (Conf: `{profile.persona_confidence:.0%}`)\n"
+        f"> **Recommended Action**: `{profile.recommended_action}`\n"
+        f"### {profile.summary}"
     )
 
     radar_section = (
@@ -278,9 +271,12 @@ def build_profile_reply_view(
         + "\n".join(radar_lines)
     )
 
-    synthesis_section = (
-        f"### 🧠 AI Behavioral Synthesis\n"
-        f"{profile.summary}"
+    metadata_section = (
+        f"### 📋 Account & Guild Metadata\n"
+        f"-# • **Account Age**: `{profile.account_age_days}` days{fresh_warning}\n"
+        f"-# • **Joined Server**: `{profile.server_age_days}` days ago\n"
+        f"-# • **Sampled Messages**: `{profile.sampled_message_count}`\n"
+        f"-# • **Prior Infractions**: `{profile.prior_offense_count}` recorded"
     )
 
     avatar_url = member.display_avatar.url if member.display_avatar else None
@@ -292,15 +288,9 @@ def build_profile_reply_view(
         include_footer=False,
     )
     reply.add_separator(spacing=discord.SeparatorSpacing.small, visible=True)
-    reply.add_body(metadata_section)
-    reply.add_separator(spacing=discord.SeparatorSpacing.small, visible=True)
     reply.add_body(radar_section)
     reply.add_separator(spacing=discord.SeparatorSpacing.small, visible=True)
-    reply.add_body(synthesis_section)
-    reply.add_footer(
-        f"Server: {guild.name} • Analyzed {profile.sampled_message_count} messages",
-        visible=True,
-    )
+    reply.add_body(metadata_section)
     return reply
 
 

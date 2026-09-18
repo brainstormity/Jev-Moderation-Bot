@@ -147,9 +147,9 @@ async def test_database_bulk_save_and_retrieve_ordering(db: Database):
 
 def test_render_progress_bar():
     """Verify progress bar generation for various thresholds."""
-    assert render_progress_bar(0.0) == "`[░░░░░░░░░░]` **0%**"
-    assert render_progress_bar(0.5) == "`[█████░░░░░]` **50%**"
-    assert render_progress_bar(1.0) == "`[██████████]` **100%**"
+    assert render_progress_bar(0.0) == "`░░░░░░░░░░` **0%**"
+    assert render_progress_bar(0.5) == "`█████░░░░░` **50%**"
+    assert render_progress_bar(1.0) == "`██████████` **100%**"
 
 
 def test_build_profile_state():
@@ -222,8 +222,8 @@ def test_build_profile_reply_view():
     assert isinstance(reply_view.container, discord.ui.Container)
     # Check that visible separators were inserted between sections
     separators = [c for c in reply_view.container.children if isinstance(c, discord.ui.Separator)]
-    assert len(separators) >= 3
-    assert any(s.visible is True for s in separators)
+    assert len(separators) == 2
+    assert all(s.visible is True for s in separators)
 
 
 
@@ -262,7 +262,7 @@ async def test_build_profile_container():
     assert len(comps) == 1
     assert comps[0]["type"] == 17
     comps_str = str(comps)
-    assert "Member Dossier — Charlie" in comps_str
+    assert "Investigating Charlie" in comps_str
     assert "BENIGN_NEWBIE" in comps_str
     assert "Behavioral Radar" in comps_str
     assert "Noobness" in comps_str

@@ -503,12 +503,21 @@ async def profile_user(
         requested_count=message_count,
     )
 
-    notice = ""
+    notice = None
     if len(messages) < message_count and not channel:
-        notice = f"*(Note: Found only `{len(messages)}/{message_count}` messages in local cache. Use 'Scan Another Channel' below to pull more.)*\n"
+        notice = f"-# *(Note: Found only `{len(messages)}/{message_count}` messages in local cache. Use 'Scan Another Channel' below to pull more.)*"
+
+    report_view = ProfileReportView(
+        profile=profile,
+        target_member=user,
+        client=typesafe_client,
+        guild=interaction.guild,
+        db=db_instance,
+        requested_count=message_count,
+        notice=notice,
+    )
 
     await interaction.followup.send(
-        content=notice or None,
         view=report_view,
         ephemeral=True,
     )

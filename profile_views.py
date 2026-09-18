@@ -214,6 +214,7 @@ class ChannelSelectFallbackView(ui.View):
             model=settings.model_override,
         )
 
+        notice_text = f"-# ✅ Fetched history from {channel.mention} (`{len(target_msgs)}` user messages found, `{total_cached}` cached across all users)."
         report_view = ProfileReportView(
             profile=profile,
             target_member=self.target_member,
@@ -221,10 +222,11 @@ class ChannelSelectFallbackView(ui.View):
             guild=interaction.guild,
             db=self.db,
             requested_count=self.requested_count,
+            notice=notice_text,
         )
 
         await interaction.edit_original_response(
-            content=f"✅ Fetched history from {channel.mention} (found `{len(target_msgs)}` user messages, cached `{total_cached}` total messages across all users).",
+            content=None,
             view=report_view,
         )
 
@@ -241,6 +243,7 @@ class ProfileReportView(ui.LayoutView):
         db: Database = db_instance,
         requested_count: int = 25,
         container: Optional[discord.ui.Container] = None,
+        notice: Optional[str] = None,
     ) -> None:
         super().__init__(timeout=300)
         self.profile = profile
@@ -258,6 +261,10 @@ class ProfileReportView(ui.LayoutView):
             self.container = create_container(
                 body=f"## 👤 Member Dossier — {self.target_member.display_name}\n{self.profile.summary}"
             )
+
+        if notice:
+            self.container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small, visible=False))
+            self.container.add_item(discord.ui.TextDisplay(notice))
 
         self.add_item(self.container)
 
