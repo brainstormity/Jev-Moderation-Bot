@@ -433,9 +433,12 @@ class MessageModerator:
                 description="Classify if the message content is legitimate, general spam, or a dangerous scam/phishing link.",
                 criteria=choice_criteria,
             ),
+            # Note: High scores on requires_immediate_ban escalate the infraction to Tier 1
+            # and present an interactive 1-click ban button in #mod-log for administrator confirmation.
+            # Automated bans are never unassisted; punishment decisions remain strictly administrator-governed.
             Noul(
                 id="requires_immediate_ban",
-                description="Is this an explicit malicious scam attempt requiring an immediate ban?",
+                description="Is this an explicit malicious scam attempt that warrants immediate administrative ban review?",
             ),
         ]
 

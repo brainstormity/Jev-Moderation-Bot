@@ -143,4 +143,5 @@ python3 -m pytest -v
 Tests cover SQLite migrations, message caching, channel scraping logic, escalation ladders, admin view permissions, and slash commands.
 
 ## License
-MIT
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
