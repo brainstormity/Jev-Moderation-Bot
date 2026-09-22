@@ -90,8 +90,16 @@ def make_mock_message(
     return msg
 
 
-def make_typesafe_response(choice: str, confidence: float, noul: float):
-    q_spam = QuestionResult("spam_classification", "choice", {"choice": choice, "confidence": confidence})
+def make_typesafe_response(
+    choice: str,
+    confidence: float,
+    noul: float,
+    probabilities: Optional[dict[str, float]] = None,
+):
+    choice_data: dict[str, Any] = {"choice": choice, "confidence": confidence}
+    if probabilities is not None:
+        choice_data["probabilities"] = probabilities
+    q_spam = QuestionResult("spam_classification", "choice", choice_data)
     q_ban = QuestionResult("requires_immediate_ban", "noul", {"noul": noul})
     return TypeSafeEvaluationResponse(
         model="jev-latest",
@@ -335,6 +343,78 @@ async def test_outage_recovery_notice_sent_on_success(db: Database):
     # Subsequent successful message: does NOT spam recovery notice again
     await moderator.handle_message(recov_msg)
     assert mod_channel.send.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_tier1_triggered_by_split_spam_scam_probabilities(db: Database):
+    """Verify that a message with low peakedness (confidence=0.55) but high combined threat
+
+    probability (SPAM: 0.50 + SCAM_LINK: 0.46 = 0.96) triggers Tier 1 action.
+    """
+    client = AsyncMock(spec=AsyncTypeSafe)
+    moderator = MessageModerator(client=client, db=db)
+
+    guild_id = 100
+    author_id = 200
+    msg = make_mock_message(guild_id=guild_id, author_id=author_id, content="Ambiguous spam/scam link")
+
+    # Peakedness is only 0.55 (well below default 0.95 tier 1 threshold),
+    # but combined threat probability is 0.50 + 0.46 = 0.96 (>= 0.95)!
+    probs = {"SPAM": 0.50, "SCAM_LINK": 0.46, "LEGITIMATE": 0.04}
+    client.evaluate = AsyncMock(
+        return_value=make_typesafe_response("SPAM", confidence=0.55, noul=0.01, probabilities=probs)
+    )
+
+    was_moderated = await moderator.handle_message(msg)
+    assert was_moderated is True
+    msg.delete.assert_called_once()
+    assert await db.get_active_offense_count(guild_id, author_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_tier2_triggered_by_moderate_threat_probability(db: Database):
+    """Verify that a message with threat probability between tier 2 (0.70) and tier 1 (0.95)
+
+    triggers Tier 2 action.
+    """
+    client = AsyncMock(spec=AsyncTypeSafe)
+    moderator = MessageModerator(client=client, db=db)
+
+    guild_id = 101
+    author_id = 201
+    msg = make_mock_message(guild_id=guild_id, author_id=author_id, content="Moderate spam message")
+
+    # Threat probability is 0.75 + 0.05 = 0.80 (>= 0.70 and < 0.95)
+    probs = {"SPAM": 0.75, "SCAM_LINK": 0.05, "LEGITIMATE": 0.20}
+    client.evaluate = AsyncMock(
+        return_value=make_typesafe_response("SPAM", confidence=0.60, noul=0.01, probabilities=probs)
+    )
+
+    was_moderated = await moderator.handle_message(msg)
+    assert was_moderated is True
+    msg.delete.assert_called_once()
+    assert await db.get_active_offense_count(guild_id, author_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_legitimate_with_low_threat_probability_allowed(db: Database):
+    """Verify that a message with low threat probability passes through (Tier 3)."""
+    client = AsyncMock(spec=AsyncTypeSafe)
+    moderator = MessageModerator(client=client, db=db)
+
+    guild_id = 102
+    author_id = 202
+    msg = make_mock_message(guild_id=guild_id, author_id=author_id, content="Legitimate chat message")
+
+    probs = {"LEGITIMATE": 0.95, "SPAM": 0.05, "SCAM_LINK": 0.00}
+    client.evaluate = AsyncMock(
+        return_value=make_typesafe_response("LEGITIMATE", confidence=0.95, noul=0.01, probabilities=probs)
+    )
+
+    was_moderated = await moderator.handle_message(msg)
+    assert was_moderated is False
+    msg.delete.assert_not_called()
+    assert await db.get_active_offense_count(guild_id, author_id) == 0
 
 
 

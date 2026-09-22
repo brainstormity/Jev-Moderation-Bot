@@ -482,9 +482,16 @@ class MessageModerator:
         confidence = spam_result.confidence
         noul = getattr(ban_result, "noul", 0.0) if ban_result else 0.0
 
-        # Tier Decision Logic
-        is_tier1 = (confidence >= settings.tier1_threshold and choice in ["SPAM", "SCAM_LINK"]) or (noul >= settings.tier1_threshold)
-        is_tier2 = (settings.tier2_threshold <= confidence < settings.tier1_threshold and choice in ["SPAM", "SCAM_LINK"]) and not is_tier1
+        # Calculate combined threat probability from probabilities dictionary
+        probs = getattr(spam_result, "probabilities", {}) or {}
+        if probs and ("SPAM" in probs or "SCAM_LINK" in probs):
+            threat_prob = float(probs.get("SPAM", 0.0) + probs.get("SCAM_LINK", 0.0))
+        else:
+            threat_prob = confidence if choice in ["SPAM", "SCAM_LINK"] else 0.0
+
+        # Tier Decision Logic: use threat_prob for sensitivity thresholds
+        is_tier1 = (threat_prob >= settings.tier1_threshold and choice in ["SPAM", "SCAM_LINK"]) or (noul >= settings.tier1_threshold)
+        is_tier2 = (settings.tier2_threshold <= threat_prob < settings.tier1_threshold and choice in ["SPAM", "SCAM_LINK"]) and not is_tier1
 
         # Tier 3 — Low Confidence / Legitimate: Allow through
         if not is_tier1 and not is_tier2:
@@ -492,7 +499,7 @@ class MessageModerator:
 
         # 5. Execute Action: Delete message immediately with Audit Log reason
         tier_label = "Tier 1 (High Threat)" if is_tier1 else "Tier 2 (Medium Threat)"
-        audit_reason = f"TypeSafe AI {tier_label}: {choice} (Conf: {confidence:.2f}, Noul: {noul:.2f})"
+        audit_reason = f"TypeSafe AI {tier_label}: {choice} (Threat: {threat_prob:.2f}, Conf: {confidence:.2f}, Noul: {noul:.2f})"
         try:
             await message.delete()
         except (discord.Forbidden, discord.NotFound) as exc:
@@ -569,7 +576,7 @@ class MessageModerator:
             message_content=message.content,
             state_summary=state_summary or "",
             classification=choice,
-            confidence=confidence,
+            confidence=threat_prob,
             noul=noul,
             action_taken=action_taken,
         )
@@ -589,7 +596,7 @@ class MessageModerator:
                         f"• **User**: {message.author.mention} (`{message.author.id}`)\n"
                         f"• **Channel**: {message.channel.mention}\n"
                         f"• **Offense Stage**: **Offense #{current_offense_num}** ({action_taken})\n"
-                        f"• **Classification**: `{choice}` (Conf: `{confidence:.1%}`)\n"
+                        f"• **Classification**: `{choice}` (Threat: `{threat_prob:.1%}`, Conf: `{confidence:.1%}`)\n"
                         f"• **Noul (Ban Urgency)**: `{noul:.1%}`\n"
                         f"• **DM Status**: {dm_status_str}\n\n"
                         f"**Message Content**:\n```{clean_content}```"
