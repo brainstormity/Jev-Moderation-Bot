@@ -259,6 +259,85 @@ async def test_api_error_recovery(db: Database):
     msg.delete.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_outage_alert_sent_after_consecutive_failures(db: Database):
+    guild_id = 777
+    mod_channel = AsyncMock(spec=discord.TextChannel)
+    mod_channel.id = 888
+    mod_channel.send = AsyncMock()
+    perms = MagicMock(spec=discord.Permissions)
+    perms.view_channel = True
+    perms.send_messages = True
+    mod_channel.permissions_for = MagicMock(return_value=perms)
+
+    await db.set_mod_log_channel(guild_id, 888)
+
+    client = AsyncMock(spec=AsyncTypeSafe)
+    client.evaluate = AsyncMock(side_effect=RuntimeError("API Outage 503"))
+    moderator = MessageModerator(client=client, db=db, consecutive_failure_threshold=3)
+
+    msg = make_mock_message(guild_id=guild_id, content="Hello 1")
+    msg.guild.get_channel = MagicMock(return_value=mod_channel)
+
+    # 1st failure: no alert yet
+    assert await moderator.handle_message(msg) is False
+    mod_channel.send.assert_not_called()
+
+    # 2nd failure: no alert yet
+    assert await moderator.handle_message(msg) is False
+    mod_channel.send.assert_not_called()
+
+    # 3rd failure: threshold reached, sends ONE outage alert
+    assert await moderator.handle_message(msg) is False
+    assert mod_channel.send.call_count == 1
+    call_args = mod_channel.send.call_args[1]
+    assert "view" in call_args
+
+    # 4th failure: still in outage, should NOT send duplicate alert
+    assert await moderator.handle_message(msg) is False
+    assert mod_channel.send.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_outage_recovery_notice_sent_on_success(db: Database):
+    guild_id = 778
+    mod_channel = AsyncMock(spec=discord.TextChannel)
+    mod_channel.id = 889
+    mod_channel.send = AsyncMock()
+    perms = MagicMock(spec=discord.Permissions)
+    perms.view_channel = True
+    perms.send_messages = True
+    mod_channel.permissions_for = MagicMock(return_value=perms)
+
+    await db.set_mod_log_channel(guild_id, 889)
+
+    client = AsyncMock(spec=AsyncTypeSafe)
+    client.evaluate = AsyncMock(side_effect=RuntimeError("API Outage"))
+    moderator = MessageModerator(client=client, db=db, consecutive_failure_threshold=3)
+
+    msg = make_mock_message(guild_id=guild_id, content="Message during outage")
+    msg.guild.get_channel = MagicMock(return_value=mod_channel)
+
+    # Trigger 3 failures to enter outage state
+    for _ in range(3):
+        await moderator.handle_message(msg)
+    assert mod_channel.send.call_count == 1
+
+    # Now API recovers and returns legitimate message response
+    client.evaluate = AsyncMock(return_value=make_typesafe_response("LEGITIMATE", 0.99, 0.0))
+    recov_msg = make_mock_message(guild_id=guild_id, content="Normal chat after recovery")
+    recov_msg.guild.get_channel = MagicMock(return_value=mod_channel)
+
+    # First successful message after outage: triggers recovery notice
+    await moderator.handle_message(recov_msg)
+    assert mod_channel.send.call_count == 2
+
+    # Subsequent successful message: does NOT spam recovery notice again
+    await moderator.handle_message(recov_msg)
+    assert mod_channel.send.call_count == 2
+
+
+
 # ---------------------------------------------------------------------------
 # Interactive Views & Ephemeral Confirmations Tests
 # ---------------------------------------------------------------------------

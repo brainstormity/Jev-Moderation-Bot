@@ -323,9 +323,91 @@ class ModLogActionView(ui.LayoutView):
 class MessageModerator:
     """Core message moderation pipeline integrating TypeSafe AI and progressive escalation."""
 
-    def __init__(self, client: AsyncTypeSafe, db: Database = db_instance) -> None:
+    def __init__(
+        self,
+        client: AsyncTypeSafe,
+        db: Database = db_instance,
+        consecutive_failure_threshold: int = 3,
+    ) -> None:
         self.client = client
         self.db = db
+        self.consecutive_failure_threshold = consecutive_failure_threshold
+        self._guild_consecutive_failures: Dict[int, int] = {}
+        self._guild_outage_alerted: Dict[int, bool] = {}
+
+    async def _handle_evaluation_failure(
+        self, guild: discord.Guild, settings: GuildSettings, exc: Exception
+    ) -> None:
+        """Track consecutive failures and notify mod-log channel once threshold is reached."""
+        failures = self._guild_consecutive_failures.get(guild.id, 0) + 1
+        self._guild_consecutive_failures[guild.id] = failures
+
+        if failures >= self.consecutive_failure_threshold and not self._guild_outage_alerted.get(guild.id, False):
+            self._guild_outage_alerted[guild.id] = True
+            logger.warning(
+                "Guild %s reached %s consecutive TypeSafe AI evaluation failures. Dispatching outage warning.",
+                guild.id,
+                failures,
+            )
+            if settings.mod_log_channel_id:
+                mod_channel = guild.get_channel(settings.mod_log_channel_id)
+                if mod_channel and isinstance(mod_channel, discord.TextChannel):
+                    bot_member = guild.me
+                    perms = mod_channel.permissions_for(bot_member)
+                    if perms.view_channel and perms.send_messages:
+                        error_type = type(exc).__name__
+                        error_detail = str(exc)[:200]
+                        outage_body = (
+                            "## ⚠️ TypeSafe AI Moderation Service Outage\n"
+                            f"Automated moderation has failed for **{failures} consecutive messages**.\n\n"
+                            "• **Status**: Failing Open (messages are allowed through unmoderated to prevent false deletions)\n"
+                            f"• **Last Error**: `{error_type}`: {error_detail}\n\n"
+                            "Please verify your `TYPESAFE_API_KEY`, API rate limits, or TypeSafe system status. "
+                            "A recovery notice will be posted here once evaluations succeed again."
+                        )
+                        container = create_container(
+                            body=outage_body,
+                            accent_color=0xED4245,
+                            footer_text="TypeSafe AI Outage Alert • Jev Moderation",
+                        )
+                        view = create_container_view(container)
+                        try:
+                            await mod_channel.send(view=view)
+                        except Exception as send_exc:
+                            logger.warning("Could not send outage warning to mod-log channel %s: %s", mod_channel.id, send_exc)
+
+    async def _handle_evaluation_success(
+        self, guild: discord.Guild, settings: GuildSettings
+    ) -> None:
+        """Reset consecutive failures and notify mod-log if recovering from an outage."""
+        was_alerted = self._guild_outage_alerted.get(guild.id, False)
+        self._guild_consecutive_failures[guild.id] = 0
+
+        if was_alerted:
+            self._guild_outage_alerted[guild.id] = False
+            logger.info("TypeSafe AI evaluation recovered for guild %s. Dispatching recovery notice.", guild.id)
+            if settings.mod_log_channel_id:
+                mod_channel = guild.get_channel(settings.mod_log_channel_id)
+                if mod_channel and isinstance(mod_channel, discord.TextChannel):
+                    bot_member = guild.me
+                    perms = mod_channel.permissions_for(bot_member)
+                    if perms.view_channel and perms.send_messages:
+                        recovery_body = (
+                            "## ✅ TypeSafe AI Moderation Service Restored\n"
+                            "TypeSafe AI message evaluations are succeeding normally again.\n\n"
+                            "• **Status**: Operational\n"
+                            "• **Automated Moderation**: Active"
+                        )
+                        container = create_container(
+                            body=recovery_body,
+                            accent_color=0x57F287,
+                            footer_text="TypeSafe AI Status Restored • Jev Moderation",
+                        )
+                        view = create_container_view(container)
+                        try:
+                            await mod_channel.send(view=view)
+                        except Exception as send_exc:
+                            logger.warning("Could not send recovery notice to mod-log channel %s: %s", mod_channel.id, send_exc)
 
     async def evaluate_message(
         self, message: discord.Message, settings: GuildSettings
@@ -380,10 +462,14 @@ class MessageModerator:
             response, state_summary = await self.evaluate_message(message, settings)
         except Exception as exc:
             logger.exception("TypeSafe AI evaluation encountered an error for message %s: %s", message.id, exc)
+            await self._handle_evaluation_failure(guild, settings, exc)
             return False
 
         if not response:
             return False
+
+        # 4. Handle recovery notice if service was previously in an outage state
+        await self._handle_evaluation_success(guild, settings)
 
         # 4. Extract classification results
         spam_result = response.questions.get("spam_classification")

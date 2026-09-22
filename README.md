@@ -125,6 +125,14 @@ When an admin clicks **Pardon (False Flag)** in the `#mod-log` channel:
 3. On future message evaluations in that server, recent pardoned messages are fed directly into the model's prompt as verified legitimate examples.
 4. The bot immediately learns server-specific slang, links, and jokes without retraining.
 
+## Fail-Open Architecture & Outage Monitoring
+
+To protect communities from accidental mass deletions or bot crashes during upstream API outages, the moderation engine **fails open**:
+- If a TypeSafe AI evaluation encounters a connection error, invalid API key, rate limit, or unexpected exception, the message is allowed through unmoderated rather than deleted.
+- **Outage Warning**: If evaluations fail for 3 consecutive messages in a server, the bot dispatches a one-time warning alert to the configured `#mod-log` channel, notifying administrators that automated moderation is temporarily offline.
+- **Deduplication**: Additional message failures while in the outage state log warnings internally but do not spam `#mod-log`.
+- **Recovery Notification**: Once a message evaluation succeeds after an outage, the bot resets the failure counter and posts an operational recovery notification to `#mod-log` confirming that automated moderation has resumed.
+
 ## Running Tests
 
 Run the test suite with pytest:
