@@ -6,17 +6,101 @@ evaluation against TypeSafe AI System One decision models (such as Jev).
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Union
 
+logger = logging.getLogger("typesafe")
+
 try:
-    from typesafe_sdk import AsyncTypeSafeClient as _SdkAsyncClient
-    from typesafe_sdk import Choice as _SdkChoice
-    from typesafe_sdk import Noul as _SdkNoul
+    from typesafe_sdk import (
+        AsyncTypeSafeClient as _SdkAsyncClient,
+        Choice as _SdkChoice,
+        Noul as _SdkNoul,
+        TypeSafeError,
+        TypeSafeAPIError,
+        TypeSafeRateLimitError,
+        TypeSafeAuthenticationError,
+        TypeSafeBadRequestError,
+        TypeSafePermissionDeniedError,
+        TypeSafeNotFoundError,
+        TypeSafeUnprocessableEntityError,
+        TypeSafeInternalServerError,
+        TypeSafeAPIConnectionError,
+        TypeSafeAPITimeoutError,
+    )
     _HAS_SDK = True
 except ImportError:
     _HAS_SDK = False
+
+    class TypeSafeError(Exception):
+        """Base exception for TypeSafe API errors."""
+        pass
+
+    class TypeSafeAPIError(TypeSafeError):
+        """An unsuccessful HTTP response with status code."""
+        def __init__(
+            self,
+            status: int = 0,
+            body: Any = None,
+            headers: Any = None,
+            message: Optional[str] = None,
+            endpoint: Optional[str] = None,
+            *args: Any,
+            **kwargs: Any,
+        ) -> None:
+            msg = message or f"HTTP status {status}"
+            super().__init__(msg, *args)
+            self.status = status
+            self.body = body
+            self.headers = headers
+            self.endpoint = endpoint
+
+    class TypeSafeRateLimitError(TypeSafeAPIError):
+        def __init__(
+            self,
+            status: int = 429,
+            body: Any = None,
+            headers: Any = None,
+            message: Optional[str] = None,
+            endpoint: Optional[str] = None,
+            *args: Any,
+            **kwargs: Any,
+        ) -> None:
+            super().__init__(status, body, headers, message, endpoint, *args, **kwargs)
+            self.retry_after_ms: Optional[float] = None
+            if headers and hasattr(headers, "get"):
+                retry_header = headers.get("retry-after")
+                if retry_header:
+                    try:
+                        self.retry_after_ms = float(retry_header) * 1000.0
+                    except (ValueError, TypeError):
+                        pass
+
+    class TypeSafeAuthenticationError(TypeSafeAPIError):
+        pass
+
+    class TypeSafeBadRequestError(TypeSafeAPIError):
+        pass
+
+    class TypeSafePermissionDeniedError(TypeSafeAPIError):
+        pass
+
+    class TypeSafeNotFoundError(TypeSafeAPIError):
+        pass
+
+    class TypeSafeUnprocessableEntityError(TypeSafeAPIError):
+        pass
+
+    class TypeSafeInternalServerError(TypeSafeAPIError):
+        pass
+
+    class TypeSafeAPIConnectionError(TypeSafeError):
+        pass
+
+    class TypeSafeAPITimeoutError(TypeSafeAPIConnectionError):
+        pass
 
 import httpx
 
@@ -210,9 +294,32 @@ class AsyncTypeSafe:
                     }
                 return TypeSafeEvaluationResponse(target_model, results, usage)
 
-            except Exception:
-                # Fall back to direct HTTP call below
-                pass
+            except TypeSafeAPIError as exc:
+                # Do NOT fall back on 4xx errors (e.g. 429 rate limits, 401 bad keys, 400 bad requests).
+                # The SDK client has already retried if applicable. Falling back to raw HTTP
+                # makes redundant requests, worsening rate limits and masking typed errors.
+                if 400 <= getattr(exc, "status", 0) < 500:
+                    raise
+                logger.warning(
+                    "TypeSafe SDK returned HTTP status %s, attempting direct HTTP fallback: %s",
+                    getattr(exc, "status", "unknown"),
+                    exc,
+                )
+            except (
+                TypeSafeRateLimitError,
+                TypeSafeAuthenticationError,
+                TypeSafeBadRequestError,
+                TypeSafePermissionDeniedError,
+                TypeSafeNotFoundError,
+                TypeSafeUnprocessableEntityError,
+            ):
+                raise
+            except Exception as exc:
+                # Fall back to direct HTTP call below for unexpected SDK internal/wrapper issues
+                logger.warning(
+                    "TypeSafe SDK client failed, attempting direct HTTP fallback: %s",
+                    exc,
+                )
 
         # Direct HTTP fallback
         url = f"{self.base_url}/v1/systemone"
@@ -228,7 +335,11 @@ class AsyncTypeSafe:
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
+            status_code = getattr(resp, "status_code", 200)
+            if isinstance(status_code, int) and status_code >= 400:
+                self._handle_http_error(resp, url)
+            if hasattr(resp, "raise_for_status") and callable(resp.raise_for_status):
+                resp.raise_for_status()
             data = resp.json()
             if hasattr(data, "__await__"):
                 data = await data
@@ -244,6 +355,45 @@ class AsyncTypeSafe:
             usage=data.get("usage", {}),
         )
 
+    @staticmethod
+    def _handle_http_error(resp: Any, url: str) -> None:
+        """Map HTTP error response to structured TypeSafe exception."""
+        status = int(getattr(resp, "status_code", 500))
+        headers = getattr(resp, "headers", {})
+        body = None
+        message = ""
+        try:
+            raw_json = resp.json()
+            if not hasattr(raw_json, "__await__"):
+                body = raw_json
+                if isinstance(body, dict) and "error" in body:
+                    err_obj = body["error"]
+                    message = err_obj.get("message", str(err_obj)) if isinstance(err_obj, dict) else str(err_obj)
+                else:
+                    message = str(body)
+        except Exception:
+            pass
+
+        if not message:
+            message = getattr(resp, "text", "") or f"HTTP status {status}"
+
+        if status == 401:
+            raise TypeSafeAuthenticationError(status, body, headers, message=message, endpoint=url)
+        elif status == 429:
+            raise TypeSafeRateLimitError(status, body, headers, message=message, endpoint=url)
+        elif status == 400:
+            raise TypeSafeBadRequestError(status, body, headers, message=message, endpoint=url)
+        elif status == 403:
+            raise TypeSafePermissionDeniedError(status, body, headers, message=message, endpoint=url)
+        elif status == 404:
+            raise TypeSafeNotFoundError(status, body, headers, message=message, endpoint=url)
+        elif status == 422:
+            raise TypeSafeUnprocessableEntityError(status, body, headers, message=message, endpoint=url)
+        elif status >= 500:
+            raise TypeSafeInternalServerError(status, body, headers, message=message, endpoint=url)
+        else:
+            raise TypeSafeAPIError(status, body, headers, message=message, endpoint=url)
+
 
 __all__ = [
     "AsyncTypeSafe",
@@ -251,4 +401,16 @@ __all__ = [
     "Noul",
     "QuestionResult",
     "TypeSafeEvaluationResponse",
+    "TypeSafeError",
+    "TypeSafeAPIError",
+    "TypeSafeRateLimitError",
+    "TypeSafeAuthenticationError",
+    "TypeSafeBadRequestError",
+    "TypeSafePermissionDeniedError",
+    "TypeSafeNotFoundError",
+    "TypeSafeUnprocessableEntityError",
+    "TypeSafeInternalServerError",
+    "TypeSafeAPIConnectionError",
+    "TypeSafeAPITimeoutError",
 ]
+
